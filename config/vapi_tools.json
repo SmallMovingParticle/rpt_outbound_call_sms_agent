@@ -1,0 +1,65 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "get_available_slots",
+      "description": "Check Stride for available physical therapy evaluation times.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "start_date": {"type": "string", "description": "Preferred start date in YYYY-MM-DD format."},
+          "days": {"type": "integer", "minimum": 1, "maximum": 31}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    "parameters": [{"key": "lead_id", "value": "{{ lead_id }}"}],
+    "async": false,
+    "messages": [{"type": "request-start", "content": "Let me check the available times for you."}]
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "book_appointment",
+      "description": "Book one previously offered Stride appointment slot after the caller confirms it.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "slot_token": {"type": "string"}
+        },
+        "required": ["slot_token"],
+        "additionalProperties": false
+      }
+    },
+    "parameters": [
+      {"key": "lead_id", "value": "{{ lead_id }}"},
+      {"key": "outreach_event_id", "value": "{{ outreach_event_id }}"}
+    ],
+    "async": false,
+    "messages": [{"type": "request-start", "content": "I am confirming that appointment now."}]
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "record_call_outcome",
+      "description": "Record the final outcome of this outreach call exactly once.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "outcome": {"type": "string", "enum": ["booked", "not_interested", "no_answer", "voicemail", "callback", "transferred", "manual"]}
+        },
+        "required": ["outcome"],
+        "additionalProperties": false
+      }
+    },
+    "parameters": [
+      {"key": "lead_id", "value": "{{ lead_id }}"},
+      {"key": "outreach_event_id", "value": "{{ outreach_event_id }}"}
+    ],
+    "async": false
+  }
+]

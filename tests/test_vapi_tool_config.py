@@ -1,0 +1,20 @@
+import json
+from pathlib import Path
+
+
+def test_vapi_tools_are_sync_strict_and_have_concise_start_messages():
+    tools = json.loads(Path("config/vapi_tools.json").read_text(encoding="utf-8"))
+    assert {tool["function"]["name"] for tool in tools} == {
+        "get_available_slots", "book_appointment", "record_call_outcome"
+    }
+    for tool in tools:
+        assert tool["async"] is False
+        assert tool["function"]["strict"] is True
+        assert tool["function"]["parameters"]["additionalProperties"] is False
+        static_keys = {item["key"] for item in tool["parameters"]}
+        assert "lead_id" in static_keys
+        assert "lead_id" not in tool["function"]["parameters"]["properties"]
+    assert "outreach_event_id" in {item["key"] for item in tools[1]["parameters"]}
+    assert "outreach_event_id" in {item["key"] for item in tools[2]["parameters"]}
+    slow_tools = tools[:2]
+    assert all(tool["messages"][0]["type"] == "request-start" for tool in slow_tools)
