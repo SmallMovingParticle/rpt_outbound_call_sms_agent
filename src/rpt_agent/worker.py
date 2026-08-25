@@ -15,6 +15,7 @@ from .db import transaction
 from .observability import WorkflowTrace, configure_logging
 from .providers import ProviderClients, ProviderError
 from .services import process_pending_integrations, reprocess_failed_vapi_events
+from .usage_report import record_test_usage
 
 
 @dataclass(frozen=True)
@@ -66,9 +67,9 @@ def compute_send_time(settings: dict, lead_id: str, start_on: date, day_offset: 
             usable = max((close_dt - open_dt).total_seconds() - 1800, 0)
             slot = (hash(str(lead_id)) % 10_000) / 10_000
             offset = max(0, min(slot * usable + random.uniform(-120, 120), usable))
-            return (open_dt + timedelta(seconds=offset)).astimezone(ZoneInfo("UTC"))
+            return (open_dt + timedelta(seconds=offset)).astimezone(UTC)
         target += timedelta(days=1)
-    return datetime.combine(target, dtime(9, 0), tzinfo=tz).astimezone(ZoneInfo("UTC"))
+    return datetime.combine(target, dtime(9, 0), tzinfo=tz).astimezone(UTC)
 
 
 def _parse_holidays(raw) -> dict:
@@ -312,6 +313,8 @@ def run_tick() -> dict[str, int]:
                     "update leads set call_attempts=call_attempts+1,last_contacted_at=now() where id=%s",
                     (job.lead_id,),
                 )
+                if providers.settings.mode("vapi") == "real":
+                    record_test_usage(conn, "vapi", "call", job.lead_id, value)
             elif state == "accepted":
                 conn.execute(
                     "update outreach_events set status='delivered',executed_at=now(),settled_at=now(),"
@@ -327,6 +330,8 @@ def run_tick() -> dict[str, int]:
                 conn.execute(
                     "update leads set last_contacted_at=now() where id=%s", (job.lead_id,)
                 )
+                if providers.settings.mode("twilio") == "real":
+                    record_test_usage(conn, "twilio", "cadence_sms", job.lead_id, value)
             else:
                 conn.execute(
                     "update outreach_events set status=%s,executed_at=now(),settled_at=now(),settled_by='worker',"

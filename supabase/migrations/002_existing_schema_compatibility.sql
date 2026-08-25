@@ -82,12 +82,13 @@ create table if not exists public.notification_log (
 alter table public.notification_log
   add column if not exists provider_ref text,
   add column if not exists error text,
+  add column if not exists delivered_at timestamptz,
   add column if not exists updated_at timestamptz not null default now();
 alter table public.notification_log
   drop constraint if exists notification_log_status_check;
 alter table public.notification_log
   add constraint notification_log_status_check check(status in (
-    'queued','sending','sent','failed','skipped','unknown'));
+    'queued','sending','sent','delivered','undelivered','failed','skipped','unknown'));
 
 -- A single durable row owns the complete send lifecycle. If development data
 -- already contains duplicates this statement fails transactionally instead of

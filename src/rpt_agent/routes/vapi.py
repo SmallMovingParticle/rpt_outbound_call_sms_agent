@@ -8,8 +8,8 @@ from fastapi import APIRouter, HTTPException, Request
 from ..db import transaction
 from ..observability import WorkflowTrace, trace_id_var
 from ..security import require_vapi_auth
-from ..services import BookingService, apply_call_outcome
-from ..vapi_contract import extract_vapi_context, parse_tool_calls, tool_error, tool_success
+from ..services import BookingService, apply_call_outcome, process_vapi_end_report
+from ..vapi_contract import parse_tool_calls, tool_error, tool_success
 
 router = APIRouter(prefix="/api/v1/vapi", tags=["vapi"])
 
@@ -131,33 +131,8 @@ async def vapi_webhook(request: Request):
     trace.log("webhook_persisted", provider_event_id=inserted["id"], event_type=event_type)
     try:
         if event_type == "end-of-call-report":
-            context = extract_vapi_context(body)
-            lead_id = str(context.get("lead_id") or "")
-            event_id = context.get("outreach_event_id")
-            ended = str(message.get("endedReason") or "")
-            outcome = "voicemail" if "voicemail" in ended.lower() else (
-                "no_answer" if "answer" in ended.lower() or "silence" in ended.lower() else "manual"
-            )
-            if lead_id and event_id:
-                apply_call_outcome(
-                    trace, lead_id=lead_id, event_id=int(event_id), outcome=outcome, source="webhook"
-                )
+            process_vapi_end_report(trace, body)
             with transaction() as conn:
-                lead_exists = (
-                    conn.execute("select 1 from leads where id=%s", (lead_id,)).fetchone()
-                    if lead_id else None
-                )
-                if lead_exists:
-                    answer_state = outcome if outcome in {"voicemail", "no_answer"} else "human"
-                    conn.execute(
-                        "insert into call_logs(lead_id,vapi_call_id,dialed_at,ended_at,answer_state,ended_reason) "
-                        "values(%s,%s,coalesce(%s::timestamptz,now()),%s::timestamptz,%s,%s) "
-                        "on conflict(vapi_call_id) do nothing",
-                        (
-                            lead_id, call_id, message.get("startedAt"), message.get("endedAt"),
-                            answer_state, ended,
-                        ),
-                    )
                 conn.execute("update provider_events set processed_at=now() where id=%s", (inserted["id"],))
         else:
             with transaction() as conn:

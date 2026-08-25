@@ -38,13 +38,19 @@ async def require_vapi_auth(request: Request) -> None:
 
 async def require_twilio_auth(request: Request, form: dict[str, str]) -> None:
     """Validate Twilio's HMAC-SHA1 request signature."""
-    auth_token = get_settings().twilio_auth_token
+    settings = get_settings()
+    auth_token = settings.twilio_auth_token
     signature = request.headers.get("x-twilio-signature", "")
-    if get_settings().mode("twilio") == "mock" and signature == "mock-valid":
+    if settings.mode("twilio") == "mock" and signature == "mock-valid":
         return
     if not auth_token or not signature:
         raise HTTPException(status_code=401, detail="missing Twilio signature")
-    public_url = str(request.url)
+    if settings.public_base_url:
+        public_url = f"{settings.public_base_url.rstrip('/')}{request.url.path}"
+        if request.url.query:
+            public_url = f"{public_url}?{request.url.query}"
+    else:
+        public_url = str(request.url)
     data = public_url + "".join(f"{key}{form[key]}" for key in sorted(form))
     digest = base64.b64encode(hmac.new(auth_token.encode(), data.encode(), hashlib.sha1).digest()).decode()
     if not hmac.compare_digest(digest, signature):

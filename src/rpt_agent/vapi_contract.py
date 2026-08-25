@@ -51,6 +51,18 @@ def _coerce_arguments(value: Any) -> dict[str, Any]:
     return {}
 
 
+def outcome_from_ended_reason(ended_reason: str) -> str:
+    """Map provider telephony outcomes; conversational tools own answered-call outcomes."""
+    reason = ended_reason.strip().lower()
+    if "voicemail" in reason:
+        return "voicemail"
+    if reason in {"customer-busy", "customer-did-not-answer"}:
+        return "no_answer"
+    if "sip-408" in reason or "sip-480" in reason:
+        return "no_answer"
+    return "manual"
+
+
 def parse_tool_calls(body: dict[str, Any]) -> list[ToolCall]:
     """Parse current Vapi toolCallList plus the documented legacy OpenAI-style shape."""
     message = body.get("message") if isinstance(body, dict) else None

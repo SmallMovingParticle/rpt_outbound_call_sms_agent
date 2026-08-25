@@ -230,11 +230,13 @@ create table if not exists public.notification_log (
   appointment_id bigint references public.appointments(id) on delete set null,
   notification_type text not null,
   channel text not null check(channel in ('sms','call')),
-  status text not null check(status in ('queued','sending','sent','failed','skipped','unknown')),
+    status text not null check(status in (
+      'queued','sending','sent','delivered','undelivered','failed','skipped','unknown')),
   provider_ref text,
   payload jsonb,
-  error text,
-  sent_at timestamptz,
+    error text,
+    sent_at timestamptz,
+    delivered_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

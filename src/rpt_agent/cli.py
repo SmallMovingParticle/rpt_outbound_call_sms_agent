@@ -17,6 +17,7 @@ from .sftp_fixtures import load_stride_fixtures
 from .worker import format_phone, materialize_cadence, run_tick
 
 ROOT = Path(__file__).resolve().parents[2]
+TEST_LEAD_RESET_SQL = ROOT / "supabase" / "dev" / "reset_test_lead_by_name.sql"
 
 
 def migrate() -> None:
@@ -113,6 +114,8 @@ def create_test_lead(args: argparse.Namespace) -> None:
     settings = get_settings()
     if not settings.test_mode:
         raise RuntimeError("set TEST_MODE=true before creating an accelerated synthetic lead")
+    if settings.app_env.lower() not in {"development", "dev", "local", "test", "testing"}:
+        raise RuntimeError("synthetic lead replacement is disabled outside development/test")
     phone = format_phone(args.phone)
     if not phone:
         raise ValueError("phone must be a valid E.164 or 10-digit North American number")
@@ -120,10 +123,34 @@ def create_test_lead(args: argparse.Namespace) -> None:
         raise ValueError("--consent-reference is required before any test call")
     dob = date.fromisoformat(args.dob)
     test_run_id = uuid4()
+    first_name = args.first_name.strip()
+    last_name = args.last_name.strip()
+    if not first_name or not last_name:
+        raise ValueError("first and last name are required")
     with transaction() as conn:
         practice = conn.execute("select id from practices where slug='rausch-pt'").fetchone()
         if not practice:
             raise RuntimeError("run `rpt seed` first")
+        active = conn.execute(
+            "select oe.id from outreach_events oe join leads l on l.id=oe.lead_id "
+            "where l.practice_id=%s and l.is_test is true and l.source_system='synthetic_test' "
+            "and lower(btrim(coalesce(l.first_name,'')))=lower(btrim(%s)) "
+            "and lower(btrim(coalesce(l.last_name,'')))=lower(btrim(%s)) "
+            "and oe.status in ('in_flight','attempted') for update of oe",
+            (practice["id"], first_name, last_name),
+        ).fetchall()
+        if active:
+            raise RuntimeError(
+                "cannot replace this synthetic lead while a call is in flight or awaiting settlement"
+            )
+        reset = conn.execute(
+            TEST_LEAD_RESET_SQL.read_text(encoding="utf-8"),
+            {
+                "practice_slug": "rausch-pt",
+                "first_name": first_name,
+                "last_name": last_name,
+            },
+        ).fetchone()
         lead = conn.execute(
             "insert into leads(practice_id,source_system,external_referral_id,is_test,test_run_id,"
             "first_name,last_name,full_name,phone_e164,phone_original,date_of_birth,timezone,line_type,"
@@ -131,8 +158,8 @@ def create_test_lead(args: argparse.Namespace) -> None:
             "values(%s,'synthetic_test',%s,true,%s,%s,%s,%s,%s,%s,%s,'America/Los_Angeles','mobile',"
             "now(),'verbal_recorded',%s,'synthetic-test-v1','new','pending') returning id",
             (
-                practice["id"], f"test-{test_run_id}", test_run_id, args.first_name.strip(),
-                args.last_name.strip(), f"{args.first_name.strip()} {args.last_name.strip()}",
+                practice["id"], f"test-{test_run_id}", test_run_id, first_name,
+                last_name, f"{first_name} {last_name}",
                 phone, args.phone, dob, args.consent_reference.strip(),
             ),
         ).fetchone()
@@ -147,6 +174,7 @@ def create_test_lead(args: argparse.Namespace) -> None:
     print(json.dumps({
         "lead_id": str(lead["id"]),
         "test_run_id": str(test_run_id),
+        "replaced_test_leads": int(reset["deleted_leads"]),
         "event_count": event_count,
         "test_day_minutes": settings.test_cadence_day_minutes,
         "schedule": schedule,

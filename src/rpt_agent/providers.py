@@ -69,13 +69,18 @@ class ProviderClients:
 
     def send_sms(self, trace: WorkflowTrace, to: str, body: str) -> str:
         base = self.settings.provider_url("twilio")
+        data = {"To": to, "From": self.settings.twilio_from_number, "Body": body}
         if self.settings.mode("twilio") == "mock":
             url = base + "/messages"
         else:
             url = f"{base}/2010-04-01/Accounts/{self.settings.twilio_account_sid}/Messages.json"
+            if self.settings.public_base_url:
+                data["StatusCallback"] = (
+                    f"{self.settings.public_base_url.rstrip('/')}/api/v1/twilio/message-status"
+                )
         response = self._request(
             trace, "twilio", "POST", url,
-            data={"To": to, "From": self.settings.twilio_from_number, "Body": body},
+            data=data,
             auth=None if self.settings.mode("twilio") == "mock" else (
                 self.settings.twilio_account_sid, self.settings.twilio_auth_token
             ),

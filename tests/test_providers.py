@@ -68,3 +68,36 @@ def test_provider_modes_can_mix_real_vapi_with_mock_stride():
     )
     assert settings.provider_url("vapi") == "https://api.vapi.ai"
     assert settings.provider_url("stride") == "http://mock.test/mock/stride"
+
+
+def test_real_twilio_message_includes_public_status_callback():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["form"] = dict(
+            item.split("=", 1) for item in request.content.decode().split("&")
+        )
+        return httpx.Response(201, json={"sid": "SM-test"})
+
+    settings = Settings(
+        provider_mode="mock",
+        twilio_mode="real",
+        twilio_account_sid="AC-test",
+        twilio_auth_token="token",
+        twilio_from_number="+15005550006",
+        public_base_url="https://public.example.test",
+    )
+    clients = ProviderClients(
+        settings,
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert clients.send_sms(
+        WorkflowTrace("provider", "test", "trace-twilio"),
+        "+15555550123",
+        "synthetic message",
+    ) == "SM-test"
+    assert seen["url"].endswith("/Accounts/AC-test/Messages.json")
+    assert seen["form"]["StatusCallback"] == (
+        "https%3A%2F%2Fpublic.example.test%2Fapi%2Fv1%2Ftwilio%2Fmessage-status"
+    )

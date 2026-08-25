@@ -82,6 +82,18 @@ async def twilio_message_status(request: Request):
             "else delivered_at end,updated_at=now() where provider_message_id=%s",
             (mapped, mapped, sid),
         )
+        conn.execute(
+            "update notification_log set status=%s,delivered_at=case when %s='delivered' then now() "
+            "else delivered_at end,error=case when %s in ('failed','undelivered') then %s else error end,"
+            "updated_at=now() where provider_ref=%s",
+            (mapped, mapped, mapped, form_data.get("ErrorCode") or None, sid),
+        )
+        conn.execute(
+            "update test_usage_ledger set status=%s,finalized_at=case when %s in "
+            "('delivered','failed','undelivered') then now() else finalized_at end "
+            "where provider='twilio' and provider_ref=%s",
+            (mapped, mapped, sid),
+        )
         conn.execute("update provider_events set processed_at=now() where id=%s", (inserted["id"],))
     trace.complete(message_status=mapped)
     return {"ok": True}

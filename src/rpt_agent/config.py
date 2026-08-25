@@ -1,4 +1,4 @@
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 from pydantic import Field
@@ -86,6 +86,6 @@ class Settings(BaseSettings):
         return errors
 
 
-@lru_cache
+@cache
 def get_settings() -> Settings:
     return Settings()

@@ -1,6 +1,11 @@
 import json
 
-from rpt_agent.vapi_contract import parse_tool_calls, tool_error, tool_success
+from rpt_agent.vapi_contract import (
+    outcome_from_ended_reason,
+    parse_tool_calls,
+    tool_error,
+    tool_success,
+)
 
 
 def test_current_vapi_shape_preserves_order_and_ids():
@@ -68,3 +73,10 @@ def test_results_are_single_line_strings():
 def test_invalid_payload_has_no_calls():
     assert parse_tool_calls({}) == []
     assert parse_tool_calls({"message": {"toolCallList": "wrong"}}) == []
+
+
+def test_vapi_busy_and_unanswered_are_normal_no_answer_outcomes():
+    assert outcome_from_ended_reason("customer-busy") == "no_answer"
+    assert outcome_from_ended_reason("customer-did-not-answer") == "no_answer"
+    assert outcome_from_ended_reason("voicemail") == "voicemail"
+    assert outcome_from_ended_reason("assistant-ended-call") == "manual"

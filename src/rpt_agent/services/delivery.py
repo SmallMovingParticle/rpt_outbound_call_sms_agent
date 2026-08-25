@@ -5,7 +5,8 @@ from zoneinfo import ZoneInfo
 from ..db import transaction
 from ..observability import WorkflowTrace
 from ..providers import ProviderClients, ProviderError
-from ..vapi_contract import extract_vapi_context
+from ..usage_report import record_test_usage
+from ..vapi_contract import extract_vapi_context, outcome_from_ended_reason
 from .lead_status import apply_call_outcome
 
 
@@ -53,6 +54,10 @@ def process_pending_integrations(
                     "updated_at=now() where id=%s",
                     (sid, row["id"]),
                 )
+                if providers.settings.mode("twilio") == "real":
+                    record_test_usage(
+                        conn, "twilio", "booking_confirmation_sms", row["lead_id"], sid
+                    )
             counts["sms"] += 1
         except ProviderError as exc:
             with transaction() as conn:
@@ -122,6 +127,50 @@ def process_pending_integrations(
     return counts
 
 
+def process_vapi_end_report(trace: WorkflowTrace, body: dict) -> str:
+    """Settle one durable Vapi end report and persist its call log idempotently."""
+    message = body.get("message") if isinstance(body, dict) else {}
+    message = message if isinstance(message, dict) else {}
+    call = message.get("call") if isinstance(message.get("call"), dict) else {}
+    context = extract_vapi_context(body)
+    lead_id = str(context.get("lead_id") or "")
+    event_id = context.get("outreach_event_id")
+    call_id = str(call.get("id") or body.get("id") or "")
+    ended = str(message.get("endedReason") or call.get("endedReason") or "")
+    if not lead_id or not event_id or not call_id:
+        raise ValueError("webhook cannot be associated with a lead, event, and call")
+    outcome = outcome_from_ended_reason(ended)
+    apply_call_outcome(
+        trace,
+        lead_id=lead_id,
+        event_id=int(event_id),
+        outcome=outcome,
+        source="webhook",
+    )
+    with transaction() as conn:
+        conn.execute(
+            "insert into call_logs(outreach_event_id,lead_id,vapi_call_id,dialed_at,ended_at,"
+            "answer_state,ended_reason) values(%s,%s,%s,coalesce(%s::timestamptz,now()),"
+            "%s::timestamptz,%s,%s) on conflict(vapi_call_id) do nothing",
+            (
+                int(event_id),
+                lead_id,
+                call_id,
+                message.get("startedAt") or call.get("startedAt"),
+                message.get("endedAt") or call.get("endedAt"),
+                outcome if outcome in {"voicemail", "no_answer"} else "human",
+                ended,
+            ),
+        )
+        conn.execute(
+            "update test_usage_ledger set status='ended',outcome=%s,finalized_at=coalesce(finalized_at,now()) "
+            "where provider='vapi' and provider_ref=%s",
+            (outcome, call_id),
+        )
+    trace.log("call_report_recorded", event_id=int(event_id), outcome=outcome)
+    return outcome
+
+
 def reprocess_failed_vapi_events(trace: WorkflowTrace) -> int:
     """Retry webhook processing only after the original payload is durable."""
     with transaction() as conn:
@@ -134,20 +183,7 @@ def reprocess_failed_vapi_events(trace: WorkflowTrace) -> int:
     for row in rows:
         try:
             body = row["payload"]
-            message = body.get("message") if isinstance(body, dict) else {}
-            message = message if isinstance(message, dict) else {}
-            context = extract_vapi_context(body)
-            lead_id = str(context.get("lead_id") or "")
-            event_id = context.get("outreach_event_id")
-            ended = str(message.get("endedReason") or "")
-            outcome = "voicemail" if "voicemail" in ended.lower() else (
-                "no_answer" if "answer" in ended.lower() or "silence" in ended.lower() else "manual"
-            )
-            if not lead_id or not event_id:
-                raise ValueError("webhook cannot be associated with a lead and event")
-            apply_call_outcome(
-                trace, lead_id=lead_id, event_id=int(event_id), outcome=outcome, source="webhook"
-            )
+            process_vapi_end_report(trace, body)
             with transaction() as conn:
                 conn.execute(
                     "update provider_events set processed_at=now(),processing_error=null where id=%s",

@@ -25,8 +25,10 @@ def test_slot_token_tamper_and_expiry(monkeypatch):
     with pytest.raises(ValueError, match="invalid or expired"):
         verify_slot(token)
     valid = sign_slot("payload", int(time.time()) + 60)
+    tamper_at = len(valid) // 2
+    tampered = valid[:tamper_at] + ("A" if valid[tamper_at] != "A" else "B") + valid[tamper_at + 1:]
     with pytest.raises(ValueError, match="invalid or expired"):
-        verify_slot(valid[:-1] + ("A" if valid[-1] != "A" else "B"))
+        verify_slot(tampered)
 
 
 def test_vapi_hmac_authentication(monkeypatch):

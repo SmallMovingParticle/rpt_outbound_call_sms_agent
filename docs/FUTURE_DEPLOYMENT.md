@@ -7,3 +7,13 @@ image. Required secrets are the Supabase database URL and real provider credenti
 Do not expose the mock provider in production. Configure Vapi authentication, Twilio request validation,
 database TLS, backups, monitoring, and the required healthcare vendor agreements before handling PHI.
 
+## Mandatory production cleanup
+
+Before a production release:
+
+- Set `APP_ENV=production` and `TEST_MODE=false`.
+- Remove `supabase/dev/reset_test_lead_by_name.sql` and the automatic replacement call from
+  `create_test_lead` in `src/rpt_agent/cli.py`, or exclude the entire synthetic `test-lead` command from the
+  production image.
+- Add a release check that fails if `TEST_MODE=true`, any `is_test=true` lead exists in the target database,
+  or `supabase/dev/` is packaged into the production artifact.

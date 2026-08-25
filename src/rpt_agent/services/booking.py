@@ -5,6 +5,7 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from ..db import transaction
 from ..observability import WorkflowTrace
@@ -250,8 +251,6 @@ class BookingService:
 
     @staticmethod
     def _slot_utc(slot: dict[str, Any], duration: int) -> tuple[datetime, datetime]:
-        from zoneinfo import ZoneInfo
-
         local = datetime.fromisoformat(f"{slot['date']}T{slot['time']}").replace(
             tzinfo=ZoneInfo(slot["timezone"])
         )

@@ -1,8 +1,8 @@
 # RPT Outreach Agent
 
 Local-first, production-shaped Python service for the Rausch PT 14-day outreach cadence. The current
-runtime uses real Vapi outbound calling and deterministic local mocks for Stride booking, Twilio, and
-the Keap-team handoff. Production cadence spreading is unchanged; accelerated time applies only to
+runtime uses real Vapi outbound calling and real Twilio messaging, with deterministic local mocks for
+Stride booking and the Keap-team handoff. Production cadence spreading is unchanged; accelerated time applies only to
 rows explicitly marked `is_test=true`.
 
 ## Project layout
@@ -15,6 +15,7 @@ src/rpt_agent/
   providers.py           Real/mock provider adapters
   worker.py              Cadence claim, dispatch, settlement, and sweepers
   mock_server.py         Deterministic Stride/Twilio/Keap/Vapi fixtures
+  usage_report.py        Real test-provider cost ledger refresh and client report
   config.py              Environment-driven runtime configuration
   db.py                  Hosted Supabase Postgres pool and transactions
 supabase/migrations/      Ordered, idempotent schema migrations
@@ -34,11 +35,11 @@ duplicated scheduler implementations or AWS-only runtime complexity.
    ```dotenv
    APP_ENV=development
    VAPI_MODE=real
-   TWILIO_MODE=mock
+   TWILIO_MODE=real
    STRIDE_MODE=mock
    KEAP_MODE=mock
    TEST_MODE=true
-   TEST_CADENCE_DAY_MINUTES=5
+   TEST_CADENCE_DAY_MINUTES=1
    ```
 
 3. Apply/verify the schema and seed the cadence:
@@ -92,9 +93,11 @@ docker compose run --rm api rpt test-lead `
   --consent-reference "written-test-consent-2026-08-25"
 ```
 
-With `TEST_MODE=true`, day 0 starts immediately and each cadence day is five minutes. Only `is_test=true`
+With `TEST_MODE=true`, day 0 starts immediately and each cadence day is one minute. Only `is_test=true`
 leads bypass production legal-hour/contact-cap gates for this synthetic test. Normal leads keep the
-documented schedule. Monitor with:
+documented schedule. Reusing the same normalized first and last name automatically removes only the older
+`is_test=true` / `synthetic_test` lead and its test workflow records before creating the new run. Replacement
+is refused while a call is active and is disabled outside development/test environments. Monitor with:
 
 ```powershell
 docker compose logs -f worker api
@@ -102,7 +105,25 @@ Get-Content logs/rpt-agent-worker.jsonl -Wait
 ```
 
 Vapi makes the real phone call. The assistant's availability and appointment tools tunnel through ngrok
-to this API, which calls the local Stride mock. Confirmation SMS and Keap handoff remain mocked.
+to this API, which calls the local Stride mock. Twilio sends real SMS and authenticated status callbacks;
+the Keap handoff remains mocked.
+
+## Test usage and client cost report
+
+Every accepted real Vapi call and real Twilio SMS for an `is_test=true` lead is written to the durable
+`test_usage_ledger`. Mock operations are excluded. The database retains the protected recipient number so
+the audit survives test-lead cleanup, while the shareable report contains only the last four digits and a
+stable one-way fingerprint.
+
+Refresh provider statuses/prices and rebuild the client report before sharing it:
+
+```powershell
+$env:PYTHONPATH = "src"
+python scripts/generate_test_usage_report.py
+```
+
+The generated report is [testing_updates/CLIENT_TEST_USAGE.md](testing_updates/CLIENT_TEST_USAGE.md).
+Provider invoices remain the accounting source of truth because prices can settle or be adjusted later.
 
 ## Commands and verification
 
