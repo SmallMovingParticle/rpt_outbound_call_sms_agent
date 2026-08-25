@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -14,7 +14,7 @@ from .observability import WorkflowTrace, configure_logging
 from .providers import ProviderClients
 from .services import process_pending_integrations
 from .sftp_fixtures import load_stride_fixtures
-from .worker import materialize_cadence
+from .worker import format_phone, materialize_cadence, run_tick
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -51,6 +51,9 @@ def seed() -> None:
 
 
 def demo() -> None:
+    settings = get_settings()
+    if any(settings.mode(name) != "mock" for name in ("vapi", "twilio", "stride", "keap")):
+        raise RuntimeError("rpt demo requires every provider mode to be mock; use `rpt test-lead` for a real Vapi call")
     trace = WorkflowTrace("local_demo", "cli")
     with transaction() as conn:
         practice = conn.execute("select id from practices where slug='rausch-pt'").fetchone()
@@ -59,10 +62,10 @@ def demo() -> None:
         referral = f"demo-{uuid4().hex[:8]}"
         lead = conn.execute(
             "insert into leads(practice_id,source_system,external_referral_id,first_name,last_name,full_name,"
-            "phone_e164,email,date_of_birth,timezone,status,cadence_state) "
+            "phone_e164,email,date_of_birth,timezone,status,cadence_state,is_test,test_run_id) "
             "values(%s,'demo',%s,'Synthetic','Patient','Synthetic Patient','+15555550123',"
-            "'synthetic@example.test','1990-01-01','America/Los_Angeles','in_progress','active') returning id",
-            (practice["id"], referral),
+            "'synthetic@example.test','1990-01-01','America/Los_Angeles','in_progress','active',true,%s) returning id",
+            (practice["id"], referral, str(uuid4())),
         ).fetchone()
         materialize_cadence(conn, str(lead["id"]), practice["id"], datetime.now(UTC).date())
         call_event = conn.execute(
@@ -106,13 +109,75 @@ def demo() -> None:
                       "booking": json.loads(booked.json()["results"][0]["result"])}, indent=2))
 
 
+def create_test_lead(args: argparse.Namespace) -> None:
+    settings = get_settings()
+    if not settings.test_mode:
+        raise RuntimeError("set TEST_MODE=true before creating an accelerated synthetic lead")
+    phone = format_phone(args.phone)
+    if not phone:
+        raise ValueError("phone must be a valid E.164 or 10-digit North American number")
+    if not args.consent_reference.strip():
+        raise ValueError("--consent-reference is required before any test call")
+    dob = date.fromisoformat(args.dob)
+    test_run_id = uuid4()
+    with transaction() as conn:
+        practice = conn.execute("select id from practices where slug='rausch-pt'").fetchone()
+        if not practice:
+            raise RuntimeError("run `rpt seed` first")
+        lead = conn.execute(
+            "insert into leads(practice_id,source_system,external_referral_id,is_test,test_run_id,"
+            "first_name,last_name,full_name,phone_e164,phone_original,date_of_birth,timezone,line_type,"
+            "consent_captured_at,consent_source,consent_reference,consent_text_version,status,cadence_state) "
+            "values(%s,'synthetic_test',%s,true,%s,%s,%s,%s,%s,%s,%s,'America/Los_Angeles','mobile',"
+            "now(),'verbal_recorded',%s,'synthetic-test-v1','new','pending') returning id",
+            (
+                practice["id"], f"test-{test_run_id}", test_run_id, args.first_name.strip(),
+                args.last_name.strip(), f"{args.first_name.strip()} {args.last_name.strip()}",
+                phone, args.phone, dob, args.consent_reference.strip(),
+            ),
+        ).fetchone()
+        event_count = materialize_cadence(
+            conn, str(lead["id"]), practice["id"], datetime.now(UTC).date()
+        )
+        schedule = conn.execute(
+            "select day_offset,channel,scheduled_for from outreach_events where lead_id=%s "
+            "order by scheduled_for",
+            (lead["id"],),
+        ).fetchall()
+    print(json.dumps({
+        "lead_id": str(lead["id"]),
+        "test_run_id": str(test_run_id),
+        "event_count": event_count,
+        "test_day_minutes": settings.test_cadence_day_minutes,
+        "schedule": schedule,
+    }, indent=2, default=str))
+
+
 def main() -> None:
     configure_logging("cli")
     parser = argparse.ArgumentParser(prog="rpt")
-    parser.add_argument("command", choices=("migrate", "verify", "seed", "demo", "fixtures"))
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("migrate", "verify", "seed", "demo", "fixtures", "tick"):
+        subparsers.add_parser(command)
+    test_lead = subparsers.add_parser("test-lead", help="create a consented synthetic lead")
+    test_lead.add_argument("--phone", required=True)
+    test_lead.add_argument("--first-name", default="Synthetic")
+    test_lead.add_argument("--last-name", default="Patient")
+    test_lead.add_argument("--dob", default="1990-01-01")
+    test_lead.add_argument("--consent-reference", required=True)
     args = parser.parse_args()
-    {"migrate": migrate, "verify": verify, "seed": seed, "demo": demo,
-     "fixtures": lambda: print(json.dumps(load_stride_fixtures(WorkflowTrace("sftp_fixture_import", "cli")), indent=2))}[args.command]()
+    commands = {
+        "migrate": migrate,
+        "verify": verify,
+        "seed": seed,
+        "demo": demo,
+        "fixtures": lambda: print(json.dumps(
+            load_stride_fixtures(WorkflowTrace("sftp_fixture_import", "cli")), indent=2
+        )),
+        "tick": lambda: print(json.dumps(run_tick(), indent=2)),
+        "test-lead": lambda: create_test_lead(args),
+    }
+    commands[args.command]()
 
 
 if __name__ == "__main__":

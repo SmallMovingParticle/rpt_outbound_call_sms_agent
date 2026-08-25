@@ -1,6 +1,13 @@
-from datetime import date
+from datetime import date, datetime
 
-from rpt_agent.worker import Job, compute_send_time, format_phone, render_sms_template
+from rpt_agent.config import Settings
+from rpt_agent.worker import (
+    Job,
+    compute_send_time,
+    format_phone,
+    materialize_cadence,
+    render_sms_template,
+)
 
 
 def test_phone_normalization():
@@ -32,3 +39,57 @@ def test_sms_template_renders_name_and_booking_link():
         vapi_phone_number_id=None,
     )
     assert render_sms_template(job) == "Hi Synthetic, book here: https://example.test/book"
+
+
+class _Result:
+    def __init__(self, *, one=None, many=None):
+        self.one = one
+        self.many = many or []
+
+    def fetchone(self):
+        return self.one
+
+    def fetchall(self):
+        return self.many
+
+
+class _CadenceConnection:
+    def __init__(self, is_test: bool):
+        self.is_test = is_test
+        self.inserted = []
+
+    def execute(self, query, params):
+        if "select ps.business_hours" in query:
+            return _Result(one={
+                "business_hours": {
+                    str(day): {"open": "09:00", "close": "17:00"} for day in range(1, 6)
+                },
+                "holidays": [],
+                "timezone": "America/Los_Angeles",
+            })
+        if "select is_test" in query:
+            return _Result(one={"is_test": self.is_test})
+        if "select id,step_order" in query:
+            return _Result(many=[
+                {"id": 1, "step_order": 1, "day_offset": 0, "channel": "call"},
+                {"id": 2, "step_order": 2, "day_offset": 1, "channel": "sms"},
+            ])
+        if "insert into outreach_events" in query:
+            self.inserted.append(params[4])
+        return _Result()
+
+
+def test_test_mode_compresses_only_synthetic_leads(monkeypatch):
+    monkeypatch.setattr(
+        "rpt_agent.worker.get_settings",
+        lambda: Settings(test_mode=True, test_cadence_day_minutes=5),
+    )
+    synthetic = _CadenceConnection(is_test=True)
+    materialize_cadence(synthetic, "test-lead", 1, date(2026, 8, 24))
+    assert isinstance(synthetic.inserted[0], datetime)
+    delta = synthetic.inserted[1] - synthetic.inserted[0]
+    assert 300 <= delta.total_seconds() <= 302
+
+    production = _CadenceConnection(is_test=False)
+    materialize_cadence(production, "prod-lead", 1, date(2026, 8, 24))
+    assert (production.inserted[1] - production.inserted[0]).total_seconds() > 5 * 60

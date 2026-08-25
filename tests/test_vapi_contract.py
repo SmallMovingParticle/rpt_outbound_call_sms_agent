@@ -44,6 +44,17 @@ def test_current_shape_accepts_json_argument_string():
     assert parse_tool_calls(body)[0].arguments == {"days": 2}
 
 
+def test_current_shape_accepts_nested_function_contract():
+    body = {"message": {"toolCallList": [{
+        "id": "nested-current",
+        "function": {"name": "check_availability", "arguments": '{"days":4}'},
+    }]}}
+    call = parse_tool_calls(body)[0]
+    assert call.tool_call_id == "nested-current"
+    assert call.name == "check_availability"
+    assert call.arguments == {"days": 4}
+
+
 def test_results_are_single_line_strings():
     success = tool_success("x", {"status": "ok", "text": "one\ntwo"})
     error = tool_error("y", "bad\nrequest")

@@ -24,7 +24,11 @@ SENSITIVE_KEYS = {
 
 def _redact_string(value: str) -> str:
     value = re.sub(r"Bearer\s+\S+", "Bearer [REDACTED]", value, flags=re.IGNORECASE)
-    value = re.sub(r"\+?\d[\d\s().-]{8,}\d", "[REDACTED_PHONE]", value)
+    def redact_phone(match: re.Match[str]) -> str:
+        digits = re.sub(r"\D", "", match.group(0))
+        return "[REDACTED_PHONE]" if 10 <= len(digits) <= 15 else match.group(0)
+
+    value = re.sub(r"(?<![\w])\+?[\d\s().-]{10,25}(?![\w-])", redact_phone, value)
     value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[REDACTED_EMAIL]", value)
     return value
 
@@ -55,6 +59,8 @@ class JsonFormatter(logging.Formatter):
             event.update(redact(details))
         if record.exc_info:
             event["error_category"] = record.exc_info[0].__name__
+            # Keep diagnostics useful without serializing tracebacks, locals, or raw payloads.
+            event["error_message"] = redact(str(record.exc_info[1]), "exception")
         return json.dumps(event, separators=(",", ":"), default=str)
 
 

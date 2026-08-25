@@ -36,7 +36,7 @@ class ProviderClients:
         trace.log("provider_request_started", provider=provider, method=method, url=url)
         headers = dict(kwargs.pop("headers", {}))
         headers["X-Trace-ID"] = trace.trace_id
-        if self.settings.provider_mode == "mock":
+        if self.settings.mode(provider) == "mock":
             headers["X-Mock-Scenario"] = self.settings.mock_scenario
         try:
             response = self.client.request(method, url, headers=headers, **kwargs)
@@ -54,8 +54,11 @@ class ProviderClients:
 
     def create_vapi_call(self, trace: WorkflowTrace, payload: dict[str, Any]) -> str:
         base = self.settings.provider_url("vapi")
-        path = "/calls" if self.settings.provider_mode == "mock" else "/call/phone"
-        headers = {"Authorization": f"Bearer {self.settings.vapi_api_key}"}
+        path = "/calls" if self.settings.mode("vapi") == "mock" else "/call"
+        headers = (
+            {"Authorization": f"Bearer {self.settings.vapi_api_key}"}
+            if self.settings.mode("vapi") == "real" else {}
+        )
         response = self._request(trace, "vapi", "POST", base + path, json=payload, headers=headers)
         if response.status_code not in (200, 201):
             raise ProviderError("vapi", str(response.status_code), response.text[:200])
@@ -66,14 +69,14 @@ class ProviderClients:
 
     def send_sms(self, trace: WorkflowTrace, to: str, body: str) -> str:
         base = self.settings.provider_url("twilio")
-        if self.settings.provider_mode == "mock":
+        if self.settings.mode("twilio") == "mock":
             url = base + "/messages"
         else:
             url = f"{base}/2010-04-01/Accounts/{self.settings.twilio_account_sid}/Messages.json"
         response = self._request(
             trace, "twilio", "POST", url,
             data={"To": to, "From": self.settings.twilio_from_number, "Body": body},
-            auth=None if self.settings.provider_mode == "mock" else (
+            auth=None if self.settings.mode("twilio") == "mock" else (
                 self.settings.twilio_account_sid, self.settings.twilio_auth_token
             ),
         )
@@ -92,7 +95,10 @@ class ProviderClients:
             trace, "stride", "GET", self.settings.provider_url("stride") + "/v1/scheduling/availabilities/",
             params={"location": location, "duration": duration, "clinician_ids": clinician_ids,
                     "start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
-            headers={"Authorization": f"Token {self.settings.stride_api_token}"},
+            headers=(
+                {"Authorization": f"Token {self.settings.stride_api_token}"}
+                if self.settings.mode("stride") == "real" else {}
+            ),
         )
         if response.status_code != 200:
             raise ProviderError("stride", str(response.status_code), response.text[:200])
@@ -110,7 +116,11 @@ class ProviderClients:
     def stride_create(self, trace: WorkflowTrace, resource: str, payload: dict[str, Any]) -> int:
         response = self._request(
             trace, "stride", "POST", self.settings.provider_url("stride") + f"/v1/{resource}/",
-            json=payload, headers={"Authorization": f"Token {self.settings.stride_api_token}"},
+            json=payload,
+            headers=(
+                {"Authorization": f"Token {self.settings.stride_api_token}"}
+                if self.settings.mode("stride") == "real" else {}
+            ),
         )
         if response.status_code != 200:
             detail = response.json().get("detail", response.text[:200]) if response.content else "empty response"
@@ -125,9 +135,8 @@ class ProviderClients:
         from .security import sign_handoff
 
         response = self._request(
-            trace, "keap_handoff", "POST", self.settings.keap_handoff_url,
+            trace, "keap", "POST", self.settings.keap_handoff_url,
             content=body, headers={"Content-Type": "application/json", "X-RPT-Signature": sign_handoff(body)},
         )
         if response.status_code not in (200, 201, 202, 204):
             raise ProviderError("keap_handoff", str(response.status_code), response.text[:200])
-

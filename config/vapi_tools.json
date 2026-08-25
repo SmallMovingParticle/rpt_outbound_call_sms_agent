@@ -2,59 +2,101 @@
   {
     "type": "function",
     "function": {
-      "name": "get_available_slots",
-      "description": "Check Stride for available physical therapy evaluation times.",
+      "name": "check_availability",
+      "description": "Check mocked Stride availability beginning on one requested date. Use only when the patient wants appointment options.",
       "strict": true,
       "parameters": {
         "type": "object",
         "properties": {
-          "start_date": {"type": "string", "description": "Preferred start date in YYYY-MM-DD format."},
-          "days": {"type": "integer", "minimum": 1, "maximum": 31}
+          "preferred_date": {
+            "type": "string",
+            "description": "First date to check in YYYY-MM-DD format. Never send a relative date."
+          }
         },
-        "required": [],
+        "required": ["preferred_date"],
         "additionalProperties": false
       }
     },
+    "server": {
+      "url": "https://cornmeal-sixtyfold-enclose.ngrok-free.dev/api/v1/vapi/tools",
+      "credentialId": "c6c3abf7-8a38-4ef2-8151-4a2a7cb15a97"
+    },
     "parameters": [{"key": "lead_id", "value": "{{ lead_id }}"}],
     "async": false,
-    "messages": [{"type": "request-start", "content": "Let me check the available times for you."}]
+    "messages": [
+      {"type": "request-start", "content": "Let me check those times for you.", "blocking": false}
+    ]
   },
   {
     "type": "function",
     "function": {
-      "name": "book_appointment",
-      "description": "Book one previously offered Stride appointment slot after the caller confirms it.",
+      "name": "create_appointment",
+      "description": "Create one mocked Stride appointment after the patient confirms a slot returned by check_availability.",
       "strict": true,
       "parameters": {
         "type": "object",
         "properties": {
-          "slot_token": {"type": "string"}
+          "slot_token": {
+            "type": "string",
+            "description": "Opaque slot_token returned for the exact selected time. Never invent or alter it."
+          },
+          "first_name": {"type": "string", "description": "Patient's confirmed first name."},
+          "last_name": {"type": "string", "description": "Patient's confirmed last name."},
+          "date_of_birth": {
+            "type": "string",
+            "description": "Patient's confirmed date of birth in YYYY-MM-DD format."
+          }
         },
-        "required": ["slot_token"],
+        "required": ["slot_token", "first_name", "last_name", "date_of_birth"],
         "additionalProperties": false
       }
+    },
+    "server": {
+      "url": "https://cornmeal-sixtyfold-enclose.ngrok-free.dev/api/v1/vapi/tools",
+      "credentialId": "c6c3abf7-8a38-4ef2-8151-4a2a7cb15a97"
     },
     "parameters": [
       {"key": "lead_id", "value": "{{ lead_id }}"},
       {"key": "outreach_event_id", "value": "{{ outreach_event_id }}"}
     ],
     "async": false,
-    "messages": [{"type": "request-start", "content": "I am confirming that appointment now."}]
+    "messages": [
+      {"type": "request-start", "content": "I am confirming that appointment now.", "blocking": false}
+    ]
   },
   {
     "type": "function",
     "function": {
-      "name": "record_call_outcome",
-      "description": "Record the final outcome of this outreach call exactly once.",
+      "name": "update_lead_status",
+      "description": "Record exactly one final call outcome. Call after booking or immediately before ending any answered call.",
       "strict": true,
       "parameters": {
         "type": "object",
         "properties": {
-          "outcome": {"type": "string", "enum": ["booked", "not_interested", "no_answer", "voicemail", "callback", "transferred", "manual"]}
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "booked", "not_interested", "callback", "transferred", "manual",
+              "call_opt_out", "do_not_contact"
+            ],
+            "description": "Final outcome. not_interested is not an opt-out; call_opt_out blocks calls only; do_not_contact blocks all outreach."
+          },
+          "callback_requested_at": {
+            "type": "string",
+            "description": "For callback only: timezone-aware ISO 8601 time within 30 days. Otherwise send an empty string."
+          },
+          "callback_notes": {
+            "type": "string",
+            "description": "Short callback instruction only, with no medical details. Otherwise send an empty string."
+          }
         },
-        "required": ["outcome"],
+        "required": ["outcome", "callback_requested_at", "callback_notes"],
         "additionalProperties": false
       }
+    },
+    "server": {
+      "url": "https://cornmeal-sixtyfold-enclose.ngrok-free.dev/api/v1/vapi/tools",
+      "credentialId": "c6c3abf7-8a38-4ef2-8151-4a2a7cb15a97"
     },
     "parameters": [
       {"key": "lead_id", "value": "{{ lead_id }}"},

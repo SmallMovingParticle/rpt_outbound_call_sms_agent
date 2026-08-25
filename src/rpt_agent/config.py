@@ -13,10 +13,17 @@ class Settings(BaseSettings):
     log_dir: Path = Path("logs")
     supabase_db_url: str = ""
     provider_mode: str = "mock"
+    vapi_mode: str | None = None
+    twilio_mode: str | None = None
+    stride_mode: str | None = None
+    keap_mode: str | None = None
     mock_base_url: str = "http://localhost:9000"
     api_base_url: str = "http://localhost:8000"
+    public_base_url: str = ""
     vapi_base_url: str = "https://api.vapi.ai"
     vapi_api_key: str = ""
+    vapi_assistant_id: str = ""
+    vapi_phone_number_id: str = ""
     vapi_webhook_secret: str = "local-vapi-secret"
     vapi_hmac_secret: str = ""
     twilio_account_sid: str = ""
@@ -29,12 +36,18 @@ class Settings(BaseSettings):
     keap_handoff_url: str = "http://localhost:9000/mock/keap/events"
     keap_handoff_secret: str = "local-keap-secret"
     worker_poll_seconds: int = 30
+    test_mode: bool = False
+    test_cadence_day_minutes: int = Field(default=5, ge=1, le=1440)
     mock_scenario: str = "success"
     request_timeout_seconds: float = 10.0
     db_pool_timeout_seconds: float = 5.0
 
+    def mode(self, provider: str) -> str:
+        override = getattr(self, f"{provider}_mode", None)
+        return override or self.provider_mode
+
     def provider_url(self, provider: str) -> str:
-        if self.provider_mode == "mock":
+        if self.mode(provider) == "mock":
             return f"{self.mock_base_url.rstrip('/')}/mock/{provider}"
         return {
             "vapi": self.vapi_base_url,
@@ -50,14 +63,26 @@ class Settings(BaseSettings):
             errors.append("SUPABASE_DB_URL still contains the example hostname")
         if self.provider_mode not in {"mock", "real"}:
             errors.append("PROVIDER_MODE must be mock or real")
-        if self.provider_mode == "real" and service in {"api", "worker"}:
-            required = {
-                "VAPI_API_KEY": self.vapi_api_key,
-                "TWILIO_ACCOUNT_SID": self.twilio_account_sid,
-                "TWILIO_AUTH_TOKEN": self.twilio_auth_token,
-                "STRIDE_API_TOKEN": self.stride_api_token,
-            }
-            errors.extend(f"{name} is required in real provider mode" for name, value in required.items() if not value)
+        for provider in ("vapi", "twilio", "stride", "keap"):
+            if self.mode(provider) not in {"mock", "real"}:
+                errors.append(f"{provider.upper()}_MODE must be mock or real")
+        if service in {"api", "worker"}:
+            required: dict[str, str] = {}
+            if self.mode("vapi") == "real":
+                required.update(VAPI_API_KEY=self.vapi_api_key)
+            if self.mode("twilio") == "real":
+                required.update(
+                    TWILIO_ACCOUNT_SID=self.twilio_account_sid,
+                    TWILIO_AUTH_TOKEN=self.twilio_auth_token,
+                )
+            if self.mode("stride") == "real":
+                required.update(STRIDE_API_TOKEN=self.stride_api_token)
+            errors.extend(
+                f"{name} is required when its provider is real"
+                for name, value in required.items() if not value
+            )
+        if self.test_mode and self.app_env.lower() in {"production", "prod"}:
+            errors.append("TEST_MODE cannot be enabled in production")
         return errors
 
 

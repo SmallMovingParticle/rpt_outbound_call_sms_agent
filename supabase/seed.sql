@@ -6,10 +6,9 @@ insert into public.practice_settings(
   practice_id,vapi_assistant_id,vapi_phone_number_id,twilio_from_number,booking_link_url,
   stride_location_id,stride_clinician_ids,stride_appointment_type_id,stride_default_duration_mins
 )
-select id,'mock-assistant','mock-phone','+15550000001','https://example.test/book',3,'42',8,60
+select id,null,null,'+15550000001','https://example.test/book',3,'42',8,60
 from public.practices where slug='rausch-pt'
 on conflict(practice_id) do update set
-  vapi_assistant_id=excluded.vapi_assistant_id,vapi_phone_number_id=excluded.vapi_phone_number_id,
   twilio_from_number=excluded.twilio_from_number,booking_link_url=excluded.booking_link_url,
   stride_location_id=excluded.stride_location_id,stride_clinician_ids=excluded.stride_clinician_ids,
   stride_appointment_type_id=excluded.stride_appointment_type_id;
@@ -44,4 +43,3 @@ insert into public.message_templates(practice_id,cadence_step_id,key,channel,bod
 select p.id,cs.id,t.key,'sms',t.body from p join public.cadence_steps cs on cs.practice_id=p.id
 join templates t on t.key=cs.key
 on conflict(practice_id,key) do update set cadence_step_id=excluded.cadence_step_id,body=excluded.body,is_active=true;
-

@@ -5,8 +5,9 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .config import get_settings
@@ -86,23 +87,35 @@ def _parse_time(value: str) -> dtime:
 
 
 def materialize_cadence(conn, lead_id: str, practice_id: int, start_on: date) -> int:
-    """Materialize the configured cadence using the existing scheduler."""
+    """Materialize production cadence or a compressed cadence for synthetic test leads."""
     settings = conn.execute(
         "select ps.business_hours,ps.holidays,p.timezone from practice_settings ps "
         "join practices p on p.id=ps.practice_id where ps.practice_id=%s", (practice_id,),
     ).fetchone()
     if not settings:
         raise ValueError("practice settings not found")
+    lead = conn.execute("select is_test from leads where id=%s", (lead_id,)).fetchone()
     steps = conn.execute(
-        "select id,day_offset,channel from cadence_steps where practice_id=%s and is_active "
+        "select id,step_order,day_offset,channel from cadence_steps where practice_id=%s and is_active "
         "order by day_offset,step_order", (practice_id,),
     ).fetchall()
+    app_settings = get_settings()
+    accelerated = bool(app_settings.test_mode and lead and lead["is_test"])
+    anchor = datetime.now(UTC)
     for step in steps:
+        scheduled_for = (
+            anchor
+            + timedelta(
+                minutes=step["day_offset"] * app_settings.test_cadence_day_minutes,
+                seconds=step["step_order"],
+            )
+            if accelerated
+            else compute_send_time(settings, lead_id, start_on, step["day_offset"])
+        )
         conn.execute(
             "insert into outreach_events(lead_id,cadence_step_id,channel,day_offset,scheduled_for,status) "
             "values(%s,%s,%s,%s,%s,'planned')",
-            (lead_id, step["id"], step["channel"], step["day_offset"],
-             compute_send_time(settings, lead_id, start_on, step["day_offset"])),
+            (lead_id, step["id"], step["channel"], step["day_offset"], scheduled_for),
         )
     conn.execute(
         "update leads set cadence_started_on=%s,cadence_state='active',status='in_progress',"
@@ -122,9 +135,11 @@ with due as (
  and ((oe.channel='call' and not l.call_opt_out) or (oe.channel='sms' and not l.sms_opt_out))
  and (oe.channel<>'call' or coalesce(l.line_type,'unknown')<>'mobile' or l.consent_captured_at is not null)
  and not exists(select 1 from suppressed_numbers s where s.phone_e164=l.phone_e164)
- and (now() at time zone coalesce(l.timezone,p.timezone))::time >= time '08:00'
- and (now() at time zone coalesce(l.timezone,p.timezone))::time < time '21:00'
- and (
+ and ((%(test_mode)s and l.is_test) or (
+   (now() at time zone coalesce(l.timezone,p.timezone))::time >= time '08:00'
+   and (now() at time zone coalesce(l.timezone,p.timezone))::time < time '21:00'
+ ))
+ and ((%(test_mode)s and l.is_test) or (
    oe.channel<>'call' or (
      select count(*) from outreach_events day_event
      where day_event.lead_id=l.id and day_event.channel='call' and day_event.executed_at is not null
@@ -133,8 +148,8 @@ with due as (
        at time zone coalesce(l.timezone,p.timezone)
      )
    ) < ps.max_calls_per_lead_per_day
- )
- and (
+ ))
+ and ((%(test_mode)s and l.is_test) or (
    oe.channel<>'sms' or (
      select count(*) from outreach_events day_event
      where day_event.lead_id=l.id and day_event.channel='sms' and day_event.executed_at is not null
@@ -143,8 +158,8 @@ with due as (
        at time zone coalesce(l.timezone,p.timezone)
      )
    ) < ps.max_sms_per_lead_per_day
- )
- order by oe.scheduled_for limit %s for update of oe skip locked
+ ))
+ order by oe.scheduled_for limit %(limit)s for update of oe skip locked
 )
 update outreach_events oe set status='in_flight',updated_at=now()
 from due where oe.id=due.id
@@ -155,7 +170,9 @@ returning oe.id,oe.lead_id,oe.channel,oe.cadence_step_id,oe.day_offset
 def claim_jobs(trace: WorkflowTrace, limit: int = 20) -> list[Job]:
     trace.log("database_operation_started", operation="claim_due_events")
     with transaction() as conn:
-        rows = conn.execute(CLAIM_SQL, (limit,)).fetchall()
+        rows = conn.execute(
+            CLAIM_SQL, {"limit": limit, "test_mode": get_settings().test_mode}
+        ).fetchall()
         jobs = []
         for row in rows:
             context = conn.execute(
@@ -168,7 +185,8 @@ def claim_jobs(trace: WorkflowTrace, limit: int = 20) -> list[Job]:
             jobs.append(Job(
                 row["id"], str(row["lead_id"]), row["channel"], context["phone_e164"],
                 context["full_name"], context["body"], context["booking_link_url"], row["day_offset"],
-                context["vapi_assistant_id"], context["vapi_phone_number_id"],
+                context["vapi_assistant_id"] or get_settings().vapi_assistant_id,
+                context["vapi_phone_number_id"] or get_settings().vapi_phone_number_id,
             ))
     trace.log("database_operation_completed", operation="claim_due_events", job_count=len(jobs))
     return jobs
@@ -185,6 +203,11 @@ def dispatch_job(trace: WorkflowTrace, job: Job, providers: ProviderClients) -> 
     child = WorkflowTrace("outreach_dispatch", "worker", trace.trace_id)
     try:
         if job.channel == "call":
+            if not job.vapi_assistant_id or not job.vapi_phone_number_id:
+                raise ProviderError(
+                    "vapi", "missing_configuration",
+                    "Vapi assistant id and phone number id are required",
+                )
             ref = providers.create_vapi_call(child, {
                 "assistantId": job.vapi_assistant_id, "phoneNumberId": job.vapi_phone_number_id,
                 "customer": {"number": job.phone}, "assistantOverrides": {"variableValues": {
@@ -268,7 +291,7 @@ def run_safety_checks(trace: WorkflowTrace) -> dict[str, int]:
 
 
 def run_tick() -> dict[str, int]:
-    trace = WorkflowTrace("worker_tick", "worker")
+    trace = WorkflowTrace("worker_tick", "worker", uuid4().hex)
     providers = ProviderClients()
     run_safety_checks(trace)
     reprocess_failed_vapi_events(trace)

@@ -32,3 +32,39 @@ def test_missing_provider_id_is_failure():
         assert exc.code == "missing_id"
     else:
         raise AssertionError("missing provider id must fail")
+
+
+def test_real_vapi_uses_current_call_endpoint_and_bearer_auth():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(201, json={"id": "real-call-123"})
+
+    clients = ProviderClients(
+        Settings(
+            provider_mode="mock",
+            vapi_mode="real",
+            vapi_base_url="https://api.vapi.test",
+            vapi_api_key="test-key",
+        ),
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    call_id = clients.create_vapi_call(WorkflowTrace("provider", "test", "trace-real"), {})
+    assert call_id == "real-call-123"
+    assert seen == {
+        "url": "https://api.vapi.test/call",
+        "authorization": "Bearer test-key",
+    }
+
+
+def test_provider_modes_can_mix_real_vapi_with_mock_stride():
+    settings = Settings(
+        provider_mode="mock",
+        vapi_mode="real",
+        stride_mode="mock",
+        mock_base_url="http://mock.test",
+    )
+    assert settings.provider_url("vapi") == "https://api.vapi.ai"
+    assert settings.provider_url("stride") == "http://mock.test/mock/stride"

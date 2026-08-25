@@ -15,7 +15,10 @@ async def require_vapi_auth(request: Request) -> None:
     expected = settings.vapi_webhook_secret
     supplied = request.headers.get("authorization", "")
     token = supplied[7:] if supplied.lower().startswith("bearer ") else ""
-    if expected and hmac.compare_digest(token, expected):
+    legacy_secret = request.headers.get("x-vapi-secret", "")
+    if expected and (
+        hmac.compare_digest(token, expected) or hmac.compare_digest(legacy_secret, expected)
+    ):
         return
     timestamp = request.headers.get("x-vapi-timestamp", "")
     signature = request.headers.get("x-vapi-signature", "")
@@ -37,7 +40,7 @@ async def require_twilio_auth(request: Request, form: dict[str, str]) -> None:
     """Validate Twilio's HMAC-SHA1 request signature."""
     auth_token = get_settings().twilio_auth_token
     signature = request.headers.get("x-twilio-signature", "")
-    if get_settings().provider_mode == "mock" and signature == "mock-valid":
+    if get_settings().mode("twilio") == "mock" and signature == "mock-valid":
         return
     if not auth_token or not signature:
         raise HTTPException(status_code=401, detail="missing Twilio signature")

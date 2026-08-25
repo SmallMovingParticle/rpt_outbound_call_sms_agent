@@ -1,45 +1,121 @@
-# RPT AI Agent
+# RPT Outreach Agent
 
-Local-first FastAPI and worker implementation for the Rausch PT outreach cadence.
-Provider integrations can run entirely against deterministic mocks while the real APIs are completed.
+Local-first, production-shaped Python service for the Rausch PT 14-day outreach cadence. The current
+runtime uses real Vapi outbound calling and deterministic local mocks for Stride booking, Twilio, and
+the Keap-team handoff. Production cadence spreading is unchanged; accelerated time applies only to
+rows explicitly marked `is_test=true`.
 
-## Quick start
+## Project layout
 
-1. Copy `.env.example` to `.env` and set `SUPABASE_DB_URL` to a **development** Supabase project.
-2. Run `docker compose run --rm api rpt migrate`.
-3. Run `docker compose run --rm api rpt seed`.
-4. Run `docker compose up --build`.
-5. Open `http://localhost:8000/docs` and `http://localhost:9000/docs`.
-
-Without Docker:
-
-```powershell
-./scripts/dev.ps1 setup
-./scripts/dev.ps1 migrate
-./scripts/dev.ps1 seed
-./scripts/dev.ps1 start
+```text
+src/rpt_agent/
+  api.py                 FastAPI assembly and trace middleware
+  routes/                Vapi, Twilio, and health HTTP boundaries
+  services/              Booking, lead-state, and integration workflows
+  providers.py           Real/mock provider adapters
+  worker.py              Cadence claim, dispatch, settlement, and sweepers
+  mock_server.py         Deterministic Stride/Twilio/Keap/Vapi fixtures
+  config.py              Environment-driven runtime configuration
+  db.py                  Hosted Supabase Postgres pool and transactions
+supabase/migrations/      Ordered, idempotent schema migrations
+config/                   Vapi tool schemas and assistant prompt
+scripts/                  Local start and Vapi synchronization utilities
+tests/                    Contract, unit, scenario, and optional DB tests
 ```
 
-Use only synthetic patient data in local and demo environments. Detailed redacted JSON logs are written to
-service-owned files such as `logs/rpt-agent-api.jsonl` and `logs/rpt-agent-worker.jsonl`;
-`X-Trace-ID` links API, worker, provider, and webhook activity. `/health` is liveness-only, while `/ready`
-also verifies configuration and the database connection.
+This adopts the useful API/service/config separation from the reference repository without copying its
+duplicated scheduler implementations or AWS-only runtime complexity.
 
-## Commands
+## First local start
 
-- `rpt migrate` - apply migrations from `supabase/migrations`.
-- `rpt verify` - show the applied migration set.
-- `rpt seed` - seed the practice, provider settings, cadence, and message templates.
-- `rpt demo` - execute a synthetic mocked booking workflow after the services are running.
-- `pytest` - run the local test suite.
+1. Copy `.env.example` to `.env`. Use only a hosted **development** Supabase database.
+2. Set `SUPABASE_DB_URL` and the Vapi values. For the current hybrid setup use:
 
-Set `PROVIDER_MODE=real` and the relevant credentials to swap provider adapters without changing workflow code.
+   ```dotenv
+   APP_ENV=development
+   VAPI_MODE=real
+   TWILIO_MODE=mock
+   STRIDE_MODE=mock
+   KEAP_MODE=mock
+   TEST_MODE=true
+   TEST_CADENCE_DAY_MINUTES=5
+   ```
 
-Vapi may authenticate with either `Authorization: Bearer <VAPI_WEBHOOK_SECRET>` or an HMAC credential using
-`X-Vapi-Timestamp` and `X-Vapi-Signature`. The signature is lowercase SHA-256 over
-`<timestamp>.<raw-request-body>` using `VAPI_HMAC_SECRET`, and timestamps older than five minutes are rejected.
+3. Apply/verify the schema and seed the cadence:
 
-Mock behavior is selected with `MOCK_SCENARIO` or the `X-Mock-Scenario` request header. Supported common
-scenarios are `success`, `malformed`, `rate_limit`, `provider_error`, `delay`, `timeout`,
-`duplicate_patient`, `unavailable_slot`, and `overlap`. Synthetic Vapi and Twilio callback payloads are
-available from the mock server's documented GET endpoints.
+   ```powershell
+   docker compose run --rm api rpt migrate
+   docker compose run --rm api rpt seed
+   docker compose run --rm api rpt verify
+   ```
+
+4. Start and verify everything:
+
+   ```powershell
+   docker compose up --build -d
+   Invoke-RestMethod http://localhost:8000/health
+   Invoke-RestMethod http://localhost:8000/ready
+   Invoke-RestMethod http://localhost:9000/health
+   docker compose logs -f api worker mock-provider
+   ```
+
+The API docs are at `http://localhost:8000/docs`; mock-provider docs are at
+`http://localhost:9000/docs`. JSON step logs are also rotated under `logs/`. `X-Trace-ID` correlates
+API, provider, worker, and webhook activity, and PHI/secrets are redacted.
+
+## ngrok and Vapi
+
+Follow [docs/LOCAL_VAPI_NGROK.md](docs/LOCAL_VAPI_NGROK.md). In short: keep Compose running, start
+`ngrok http 8000`, set `PUBLIC_BASE_URL`, and run:
+
+```powershell
+$env:PYTHONPATH = "src"
+python scripts/sync_vapi.py
+```
+
+That command idempotently synchronizes the three current synchronous custom tools and assistant webhook.
+It preserves Vapi's built-in transfer/end-call tools. Tool requests accept the current
+`message.toolCallList` contract and a narrow legacy compatibility shape; authenticated business failures
+still return HTTP 200 with ordered, single-line results using the exact `toolCallId`.
+
+## Consented synthetic cadence test
+
+Do not use an arbitrary or production patient number. Once the owner of a working number has explicitly
+consented, create a marked test lead:
+
+```powershell
+docker compose run --rm api rpt test-lead `
+  --phone "+1XXXXXXXXXX" `
+  --first-name "Synthetic" `
+  --last-name "Tester" `
+  --dob "1990-01-01" `
+  --consent-reference "written-test-consent-2026-08-25"
+```
+
+With `TEST_MODE=true`, day 0 starts immediately and each cadence day is five minutes. Only `is_test=true`
+leads bypass production legal-hour/contact-cap gates for this synthetic test. Normal leads keep the
+documented schedule. Monitor with:
+
+```powershell
+docker compose logs -f worker api
+Get-Content logs/rpt-agent-worker.jsonl -Wait
+```
+
+Vapi makes the real phone call. The assistant's availability and appointment tools tunnel through ngrok
+to this API, which calls the local Stride mock. Confirmation SMS and Keap handoff remain mocked.
+
+## Commands and verification
+
+- `rpt migrate`, `rpt verify`, `rpt seed` — database lifecycle.
+- `rpt test-lead ...` — create a consented, accelerated synthetic lead.
+- `rpt tick` — run one worker tick for debugging.
+- `rpt demo` — fully mocked demo; intentionally refuses to run if any provider is real.
+- `pytest -q` — unit/contract suite. Database tests require `TEST_DATABASE_URL` and are skipped otherwise.
+- `ruff check .` — static checks.
+
+Provider modes are independent. Changing `VAPI_MODE`, `TWILIO_MODE`, `STRIDE_MODE`, or `KEAP_MODE`
+switches adapters without modifying cadence or booking logic.
+
+The `.env` file is git-ignored and excluded from the Docker build context. Since credentials pasted into
+chat should be treated as exposed, rotate them before production use and rerun the Vapi sync after updating
+the credential in Vapi.

@@ -63,11 +63,17 @@ def parse_tool_calls(body: dict[str, Any]) -> list[ToolCall]:
         for item in current:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
-            arguments = _coerce_arguments(item.get("arguments", item.get("parameters", {})))
+            function = item.get("function") if isinstance(item.get("function"), dict) else {}
+            arguments = _coerce_arguments(
+                item.get(
+                    "arguments",
+                    item.get("parameters", function.get("arguments", function.get("parameters", {}))),
+                )
+            )
             calls.append(
                 ToolCall(
                     str(item["id"]),
-                    str(item.get("name") or ""),
+                    str(item.get("name") or function.get("name") or ""),
                     {**arguments, **trusted},
                 )
             )

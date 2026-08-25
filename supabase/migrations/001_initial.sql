@@ -67,6 +67,8 @@ create table if not exists public.leads (
   practice_id bigint not null references public.practices(id) on delete restrict,
   source_system text not null default 'manual',
   external_referral_id text,
+  is_test boolean not null default false,
+  test_run_id uuid,
   first_name text,
   last_name text,
   full_name text not null,
@@ -86,7 +88,8 @@ create table if not exists public.leads (
   status_reason text,
   status_changed_at timestamptz,
   last_call_outcome text check(last_call_outcome is null or last_call_outcome in (
-    'booked','not_interested','no_answer','voicemail','callback','transferred','manual')),
+    'booked','not_interested','no_answer','voicemail','callback','transferred','manual',
+    'call_opt_out','do_not_contact')),
   cadence_started_on date,
   cadence_state text not null default 'pending' check(cadence_state in (
     'pending','active','paused','completed','terminated')),
@@ -107,6 +110,7 @@ create table if not exists public.leads (
 );
 create index if not exists idx_leads_phone on public.leads(phone_e164);
 create index if not exists idx_leads_active on public.leads(cadence_state) where cadence_state='active';
+create index if not exists idx_leads_test_run on public.leads(test_run_id) where is_test;
 
 create table if not exists public.lead_status_history (
   id bigint generated always as identity primary key,
@@ -145,7 +149,8 @@ create table if not exists public.outreach_events (
   vapi_call_id text,
   settled_by text check(settled_by is null or settled_by in ('worker','tool','webhook','sweeper')),
   outcome text check(outcome is null or outcome in (
-    'booked','not_interested','no_answer','voicemail','callback','transferred','manual')),
+    'booked','not_interested','no_answer','voicemail','callback','transferred','manual',
+    'call_opt_out','do_not_contact')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

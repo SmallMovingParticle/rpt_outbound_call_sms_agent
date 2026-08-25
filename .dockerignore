@@ -1,0 +1,12 @@
+.env
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+logs
+refrences_git_clone
+dist
+build

@@ -19,6 +19,17 @@ def test_redaction_removes_phi_and_secrets():
     assert "1990-01-01" not in encoded
 
 
+def test_redaction_keeps_safe_uuid_and_workflow_date():
+    value = redact({
+        "lead_id": "2e992600-1ea0-43f3-b4db-297d33cdd4fa",
+        "start_date": "2026-08-26",
+        "note": "call +1 555 555 1212",
+    })
+    assert value["lead_id"] == "2e992600-1ea0-43f3-b4db-297d33cdd4fa"
+    assert value["start_date"] == "2026-08-26"
+    assert value["note"] == "call [REDACTED_PHONE]"
+
+
 def test_json_formatter_has_trace_and_ordered_steps(caplog):
     trace = WorkflowTrace("test_flow", "test", "trace-123")
     with caplog.at_level(logging.INFO):
@@ -30,4 +41,3 @@ def test_json_formatter_has_trace_and_ordered_steps(caplog):
     payload = json.loads(formatter.format(records[-1]))
     assert payload["trace_id"] == "trace-123"
     assert payload["workflow"] == "test_flow"
-

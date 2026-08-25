@@ -3,6 +3,8 @@ import json
 from fastapi.testclient import TestClient
 
 import rpt_agent.api as api_module
+import rpt_agent.routes.vapi as vapi_routes
+from rpt_agent.config import get_settings
 
 
 class FakeBookingService:
@@ -10,7 +12,7 @@ class FakeBookingService:
         trace.log("fake_availability", lead_id=lead_id)
         return {"status": "ok", "slots": []}
 
-    def book(self, trace, lead_id, event_id, slot_token):
+    def book(self, trace, lead_id, event_id, slot_token, patient_data=None):
         return {"status": "confirmed", "appointment_id": 123}
 
 
@@ -21,7 +23,7 @@ def test_vapi_tools_require_auth(monkeypatch):
 
 
 def test_vapi_results_preserve_order_and_business_errors_use_200(monkeypatch):
-    monkeypatch.setattr(api_module, "BookingService", FakeBookingService)
+    monkeypatch.setattr(vapi_routes, "BookingService", FakeBookingService)
     client = TestClient(api_module.app)
     payload = {"message": {"toolCallList": [
         {"id": "one", "name": "availability", "arguments": {"lead_id": "lead-1"}},
@@ -29,7 +31,10 @@ def test_vapi_results_preserve_order_and_business_errors_use_200(monkeypatch):
     ]}}
     response = client.post(
         "/api/v1/vapi/tools", json=payload,
-        headers={"Authorization": "Bearer local-vapi-secret", "X-Trace-ID": "trace-api"},
+        headers={
+            "Authorization": f"Bearer {get_settings().vapi_webhook_secret}",
+            "X-Trace-ID": "trace-api",
+        },
     )
     assert response.status_code == 200
     results = response.json()["results"]
@@ -38,4 +43,3 @@ def test_vapi_results_preserve_order_and_business_errors_use_200(monkeypatch):
     assert "error" in results[1]
     assert "\n" not in results[1]["error"]
     assert response.headers["X-Trace-ID"] == "trace-api"
-

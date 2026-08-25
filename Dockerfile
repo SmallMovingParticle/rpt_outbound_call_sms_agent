@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/src
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
@@ -9,4 +9,3 @@ COPY supabase ./supabase
 COPY fixtures ./fixtures
 RUN mkdir -p /app/logs
 CMD ["uvicorn", "rpt_agent.api:app", "--host", "0.0.0.0", "--port", "8000"]
-
