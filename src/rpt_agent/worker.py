@@ -14,7 +14,12 @@ from .config import get_settings
 from .db import transaction
 from .observability import WorkflowTrace, configure_logging
 from .providers import ProviderClients, ProviderError
-from .services import process_pending_integrations, reprocess_failed_vapi_events
+from .retry import retry_delay_seconds
+from .services.delivery import (
+    process_pending_integrations,
+    reprocess_failed_twilio_events,
+    reprocess_failed_vapi_events,
+)
 from .usage_report import record_test_usage
 
 
@@ -30,6 +35,18 @@ class Job:
     day_offset: int | None
     vapi_assistant_id: str | None
     vapi_phone_number_id: str | None
+    attempt_no: int = 1
+    date_of_birth: date | None = None
+    case_title: str = ""
+    location_id: int | None = None
+
+
+@dataclass(frozen=True)
+class DispatchResult:
+    job: Job
+    state: str
+    value: str
+    retry_after_seconds: int | None = None
 
 
 def format_phone(raw: str | None) -> str | None:
@@ -164,7 +181,7 @@ with due as (
 )
 update outreach_events oe set status='in_flight',updated_at=now()
 from due where oe.id=due.id
-returning oe.id,oe.lead_id,oe.channel,oe.cadence_step_id,oe.day_offset
+  returning oe.id,oe.lead_id,oe.channel,oe.cadence_step_id,oe.day_offset,oe.attempt_no
 """
 
 
@@ -178,7 +195,8 @@ def claim_jobs(trace: WorkflowTrace, limit: int = 20) -> list[Job]:
         for row in rows:
             context = conn.execute(
                 "select l.full_name,l.phone_e164,ps.vapi_assistant_id,ps.vapi_phone_number_id,"
-                "ps.booking_link_url,mt.body from leads l "
+                "ps.booking_link_url,l.date_of_birth,ps.stride_case_title,ps.stride_location_id,mt.body "
+                "from leads l "
                 "join practice_settings ps on ps.practice_id=l.practice_id "
                 "left join message_templates mt on mt.cadence_step_id=%s and mt.is_active where l.id=%s limit 1",
                 (row["cadence_step_id"], row["lead_id"]),
@@ -188,6 +206,10 @@ def claim_jobs(trace: WorkflowTrace, limit: int = 20) -> list[Job]:
                 context["full_name"], context["body"], context["booking_link_url"], row["day_offset"],
                 context["vapi_assistant_id"] or get_settings().vapi_assistant_id,
                 context["vapi_phone_number_id"] or get_settings().vapi_phone_number_id,
+                row["attempt_no"],
+                context["date_of_birth"],
+                context["stride_case_title"],
+                context["stride_location_id"],
             ))
     trace.log("database_operation_completed", operation="claim_due_events", job_count=len(jobs))
     return jobs
@@ -200,7 +222,7 @@ def render_sms_template(job: Job) -> str:
     ).strip()
 
 
-def dispatch_job(trace: WorkflowTrace, job: Job, providers: ProviderClients) -> tuple[Job, str, str]:
+def dispatch_job(trace: WorkflowTrace, job: Job, providers: ProviderClients) -> DispatchResult:
     child = WorkflowTrace("outreach_dispatch", "worker", trace.trace_id)
     try:
         if job.channel == "call":
@@ -214,6 +236,9 @@ def dispatch_job(trace: WorkflowTrace, job: Job, providers: ProviderClients) -> 
                 "customer": {"number": job.phone}, "assistantOverrides": {"variableValues": {
                     "lead_id": job.lead_id, "outreach_event_id": str(job.event_id), "patient_name": job.name,
                     "booking_link": job.booking_link_url or "", "day_offset": job.day_offset,
+                    "date_of_birth": job.date_of_birth.isoformat() if job.date_of_birth else "",
+                    "case_title": job.case_title,
+                    "location": str(job.location_id or ""),
                 }},
             })
         else:
@@ -222,10 +247,18 @@ def dispatch_job(trace: WorkflowTrace, job: Job, providers: ProviderClients) -> 
                 raise ProviderError("twilio", "missing_template", "SMS template is missing")
             ref = providers.send_sms(child, job.phone, body)
         child.complete(provider_ref=ref)
-        return job, "accepted", ref
+        return DispatchResult(job, "accepted", ref)
     except ProviderError as exc:
         child.fail(exc)
-        return job, "unknown" if exc.ambiguous else "failed", str(exc)
+        state = "retry" if exc.retryable else ("unknown" if exc.ambiguous else "failed")
+        return DispatchResult(job, state, str(exc), exc.retry_after_seconds)
+    except Exception as exc:  # noqa: BLE001 - isolate one dispatch with an unknown outcome
+        child.fail(exc)
+        return DispatchResult(
+            job,
+            "unknown",
+            f"unexpected dispatch error: {type(exc).__name__}",
+        )
 
 
 def run_safety_checks(trace: WorkflowTrace) -> dict[str, int]:
@@ -235,6 +268,7 @@ def run_safety_checks(trace: WorkflowTrace) -> dict[str, int]:
         "orphaned_calls": 0,
         "stuck_notifications": 0,
         "stuck_handoffs": 0,
+        "stuck_bookings": 0,
         "exhausted_leads": 0,
     }
     with transaction() as conn:
@@ -246,7 +280,7 @@ def run_safety_checks(trace: WorkflowTrace) -> dict[str, int]:
         orphaned = conn.execute(
             "update outreach_events set status='delivered',settled_at=now(),settled_by='sweeper',outcome='manual',"
             "failure_reason='call outcome was not reported' where status='attempted' "
-            "and executed_at<now()-interval '2 hours' returning lead_id"
+            "and executed_at<now()-interval '2 hours' returning lead_id,vapi_call_id"
         ).fetchall()
         for row in stuck:
             conn.execute(
@@ -258,6 +292,13 @@ def run_safety_checks(trace: WorkflowTrace) -> dict[str, int]:
                 "update leads set needs_review=true,review_reason=%s,review_flagged_at=now() where id=%s",
                 ("call outcome not reported", row["lead_id"]),
             )
+            if row["vapi_call_id"]:
+                conn.execute(
+                    "update test_usage_ledger set status='ended',outcome='manual',"
+                    "finalized_at=coalesce(finalized_at,now()) "
+                    "where provider='vapi' and provider_ref=%s",
+                    (row["vapi_call_id"],),
+                )
         stuck_notifications = conn.execute(
             "update notification_log set status='unknown',error=%s,updated_at=now() "
             "where status='sending' and updated_at<now()-interval '15 minutes' returning lead_id",
@@ -274,6 +315,17 @@ def run_safety_checks(trace: WorkflowTrace) -> dict[str, int]:
             "where status='sending' and updated_at<now()-interval '15 minutes' returning id",
             ("worker stopped during delivery; retry with the same event_id",),
         ).fetchall()
+        stuck_bookings = conn.execute(
+            "update appointments set state='unknown',needs_staff_review=true,stride_error=%s,"
+            "updated_at=now() where state='booking' and updated_at<now()-interval '15 minutes' "
+            "returning lead_id",
+            ("booking did not reach a durable result; reconcile with Stride before retry",),
+        ).fetchall()
+        for row in stuck_bookings:
+            conn.execute(
+                "update leads set needs_review=true,review_reason=%s,review_flagged_at=now() where id=%s",
+                ("stale Stride booking requires reconciliation", row["lead_id"]),
+            )
         exhausted = conn.execute(
             "update leads l set status='closed_no_response',cadence_state='completed',status_changed_at=now() "
             "where l.cadence_state='active' and l.cadence_started_on+14<=current_date "
@@ -285,6 +337,7 @@ def run_safety_checks(trace: WorkflowTrace) -> dict[str, int]:
             orphaned_calls=len(orphaned),
             stuck_notifications=len(stuck_notifications),
             stuck_handoffs=len(stuck_handoffs),
+            stuck_bookings=len(stuck_bookings),
             exhausted_leads=len(exhausted),
         )
     trace.log("safety_checks_completed", **counts)
@@ -296,18 +349,22 @@ def run_tick() -> dict[str, int]:
     providers = ProviderClients()
     run_safety_checks(trace)
     reprocess_failed_vapi_events(trace)
+    reprocess_failed_twilio_events(trace)
     jobs = claim_jobs(trace)
     results = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(dispatch_job, trace, job, providers) for job in jobs]
         results.extend(future.result() for future in as_completed(futures))
-    counts = {"accepted": 0, "failed": 0, "unknown": 0}
+    counts = {"accepted": 0, "retried": 0, "failed": 0, "unknown": 0}
+    settings = get_settings()
     with transaction() as conn:
-        for job, state, value in results:
+        for result in results:
+            job, state, value = result.job, result.state, result.value
             if state == "accepted" and job.channel == "call":
                 conn.execute(
-                    "update outreach_events set status='attempted',executed_at=now(),provider='vapi',"
-                    "provider_ref=%s,vapi_call_id=%s where id=%s and status='in_flight'", (value, value, job.event_id),
+                    "update outreach_events set status=case when status='in_flight' then 'attempted' else status end,"
+                    "executed_at=coalesce(executed_at,now()),provider='vapi',provider_ref=%s,vapi_call_id=%s "
+                    "where id=%s and status in ('in_flight','delivered')", (value, value, job.event_id),
                 )
                 conn.execute(
                     "update leads set call_attempts=call_attempts+1,last_contacted_at=now() where id=%s",
@@ -332,17 +389,46 @@ def run_tick() -> dict[str, int]:
                 )
                 if providers.settings.mode("twilio") == "real":
                     record_test_usage(conn, "twilio", "cadence_sms", job.lead_id, value)
+            elif state == "retry" and job.attempt_no < settings.retry_max_attempts:
+                delay = retry_delay_seconds(
+                    job.attempt_no,
+                    result.retry_after_seconds,
+                    settings,
+                )
+                conn.execute(
+                    "update outreach_events set status='planned',scheduled_for=now()+make_interval(secs=>%s),"
+                    "attempt_no=attempt_no+1,failure_reason=%s,updated_at=now() "
+                    "where id=%s and status='in_flight'",
+                    (delay, value[:500], job.event_id),
+                )
+                trace.log(
+                    "outreach_retry_scheduled",
+                    event_id=job.event_id,
+                    attempt=job.attempt_no,
+                    retry_in_seconds=delay,
+                )
+                counts["retried"] += 1
             else:
+                exhausted = state == "retry"
                 conn.execute(
                     "update outreach_events set status=%s,executed_at=now(),settled_at=now(),settled_by='worker',"
                     "failure_reason=%s where id=%s and status='in_flight'",
-                    ("failed" if state == "failed" else "unknown", value[:500], job.event_id),
+                    ("failed" if state in {"failed", "retry"} else "unknown", value[:500], job.event_id),
                 )
                 conn.execute(
                     "update leads set needs_review=true,review_reason=%s,review_flagged_at=now() where id=%s",
-                    (f"ambiguous dispatch: {value}" if state == "unknown" else f"dispatch failed: {value}", job.lead_id),
+                    (
+                        f"dispatch retries exhausted: {value}"
+                        if exhausted else (
+                            f"ambiguous dispatch: {value}"
+                            if state == "unknown" else f"dispatch failed: {value}"
+                        ),
+                        job.lead_id,
+                    ),
                 )
-            counts[state] += 1
+                counts["failed" if state in {"failed", "retry"} else "unknown"] += 1
+            if state == "accepted":
+                counts["accepted"] += 1
     process_pending_integrations(trace, providers)
     trace.complete(**counts)
     return counts

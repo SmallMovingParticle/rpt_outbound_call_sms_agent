@@ -1,9 +1,12 @@
 from datetime import date, datetime
 
 from rpt_agent.config import Settings
+from rpt_agent.observability import WorkflowTrace
+from rpt_agent.providers import ProviderError
 from rpt_agent.worker import (
     Job,
     compute_send_time,
+    dispatch_job,
     format_phone,
     materialize_cadence,
     render_sms_template,
@@ -93,3 +96,19 @@ def test_test_mode_compresses_only_synthetic_leads(monkeypatch):
     production = _CadenceConnection(is_test=False)
     materialize_cadence(production, "prod-lead", 1, date(2026, 8, 24))
     assert (production.inserted[1] - production.inserted[0]).total_seconds() > 5 * 60
+
+
+def test_dispatch_classifies_safe_retry_and_ambiguous_exception():
+    job = Job(1, "lead", "sms", "+15555550123", "Test", "hello", None, 0, None, None)
+
+    class RetryableProvider:
+        def send_sms(self, trace, phone, body):
+            raise ProviderError("twilio", "429", "rate limited", retryable=True)
+
+    class UnexpectedProvider:
+        def send_sms(self, trace, phone, body):
+            raise ValueError("malformed successful response")
+
+    trace = WorkflowTrace("worker", "test")
+    assert dispatch_job(trace, job, RetryableProvider()).state == "retry"
+    assert dispatch_job(trace, job, UnexpectedProvider()).state == "unknown"

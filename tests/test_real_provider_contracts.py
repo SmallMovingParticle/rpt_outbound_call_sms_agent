@@ -18,7 +18,11 @@ def test_real_stride_availability_contract():
         pytest.skip("STRIDE_API_TOKEN is not configured")
     start = datetime.now(UTC).date()
     slots = ProviderClients(settings).stride_availability(
-        WorkflowTrace("real_stride_contract", "test"), location=3, duration=60,
-        clinician_ids="42", start_date=start, end_date=start + timedelta(days=1),
+        WorkflowTrace("real_stride_contract", "test"),
+        location=int(os.getenv("TEST_STRIDE_LOCATION_ID", "3169")),
+        duration=60,
+        clinician_ids=os.getenv("TEST_STRIDE_CLINICIAN_IDS", "5981,5982,5980"),
+        start_date=start,
+        end_date=start + timedelta(days=1),
     )
     assert isinstance(slots, list)

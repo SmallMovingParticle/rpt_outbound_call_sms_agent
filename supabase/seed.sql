@@ -4,14 +4,20 @@ on conflict(slug) do update set name=excluded.name,timezone=excluded.timezone;
 
 insert into public.practice_settings(
   practice_id,vapi_assistant_id,vapi_phone_number_id,twilio_from_number,booking_link_url,
-  stride_location_id,stride_clinician_ids,stride_appointment_type_id,stride_default_duration_mins
+  stride_location_id,stride_clinician_ids,stride_appointment_type_id,stride_default_duration_mins,
+  stride_case_title,stride_location_timezone,stride_booking_enabled
 )
-select id,null,null,'+15550000001','https://example.test/book',3,'42',8,60
+select id,null,null,'+15550000001','https://example.test/book',3169,'5981,5982,5980',8,60,
+  'Initial Evaluation','America/New_York',false
 from public.practices where slug='rausch-pt'
 on conflict(practice_id) do update set
   twilio_from_number=excluded.twilio_from_number,booking_link_url=excluded.booking_link_url,
   stride_location_id=excluded.stride_location_id,stride_clinician_ids=excluded.stride_clinician_ids,
-  stride_appointment_type_id=excluded.stride_appointment_type_id;
+  stride_appointment_type_id=excluded.stride_appointment_type_id,
+  stride_default_duration_mins=excluded.stride_default_duration_mins,
+  stride_case_title=excluded.stride_case_title,
+  stride_location_timezone=excluded.stride_location_timezone,
+  stride_booking_enabled=excluded.stride_booking_enabled;
 
 with p as (select id from public.practices where slug='rausch-pt'), values_to_upsert as (
   select * from (values

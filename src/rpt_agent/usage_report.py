@@ -39,6 +39,14 @@ def record_test_usage(conn, provider: str, usage_type: str, lead_id: str, provid
         "where id=%s and is_test is true on conflict(provider,provider_ref) do nothing",
         (provider, usage_type, provider_ref, lead_id),
     )
+    if provider == "vapi":
+        conn.execute(
+            "update test_usage_ledger u set status='ended',outcome=oe.outcome,"
+            "finalized_at=coalesce(u.finalized_at,now()) from outreach_events oe "
+            "where u.provider='vapi' and u.provider_ref=%s and oe.vapi_call_id=u.provider_ref "
+            "and exists(select 1 from call_logs cl where cl.vapi_call_id=u.provider_ref)",
+            (provider_ref,),
+        )
 
 
 def refresh_provider_usage() -> None:

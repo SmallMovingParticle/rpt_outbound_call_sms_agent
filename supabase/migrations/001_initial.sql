@@ -34,6 +34,7 @@ create table if not exists public.practice_settings (
   stride_default_duration_mins smallint not null default 60,
   stride_case_title text not null default 'Physical Therapy',
   stride_location_timezone text not null default 'America/Los_Angeles',
+  stride_booking_enabled boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

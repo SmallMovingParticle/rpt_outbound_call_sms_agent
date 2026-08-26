@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import UTC, date, datetime, timedelta
+from datetime import time as clock_time
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -18,18 +20,69 @@ class BookingService:
     def __init__(self, providers: ProviderClients | None = None):
         self.providers = providers or ProviderClients()
 
-    def availability(
-        self, trace: WorkflowTrace, lead_id: str, start: date, days: int = 7
-    ) -> dict[str, Any]:
-        trace.log("request_parsed", lead_id=lead_id, start_date=start.isoformat(), days=days)
+    @staticmethod
+    def _parse_time(value: str) -> clock_time:
+        text = re.sub(r"\s+", " ", value.strip().upper())
+        for pattern in ("%I %p", "%I:%M %p", "%H:%M", "%H:%M:%S"):
+            try:
+                return datetime.strptime(text, pattern).replace(tzinfo=UTC).time()
+            except ValueError:
+                continue
+        raise ValueError("Please say the time like 9 AM, 2:30 PM, or 14:30.")
+
+    @staticmethod
+    def _spoken_time(value: str) -> str:
+        return clock_time.fromisoformat(value).strftime("%I:%M %p").lstrip("0")
+
+    @staticmethod
+    def _slot_token(lead_id: str, slot, expires: int) -> str:
+        payload = json.dumps(
+            {
+                "lead_id": lead_id,
+                "clinician_id": slot.clinician_id,
+                "date": slot.local_date,
+                "time": slot.local_time,
+                "timezone": slot.timezone,
+            },
+            separators=(",", ":"),
+        )
+        return sign_slot(payload, expires)
+
+    @staticmethod
+    def _booking_context(lead_id: str | None, practice_id: int | None = None) -> dict[str, Any]:
         with transaction() as conn:
-            row = conn.execute(
-                "select l.id,ps.stride_location_id,ps.stride_clinician_ids,"
-                "ps.stride_default_duration_mins from leads l join practice_settings ps "
-                "on ps.practice_id=l.practice_id where l.id=%s", (lead_id,),
-            ).fetchone()
+            if lead_id:
+                row = conn.execute(
+                    "select l.id,ps.*,p.timezone from leads l join practice_settings ps "
+                    "on ps.practice_id=l.practice_id join practices p on p.id=l.practice_id "
+                    "where l.id=%s",
+                    (lead_id,),
+                ).fetchone()
+            elif practice_id is not None:
+                row = conn.execute(
+                    "select null::uuid as id,ps.*,p.timezone from practice_settings ps "
+                    "join practices p on p.id=ps.practice_id where ps.practice_id=%s",
+                    (practice_id,),
+                ).fetchone()
+            else:
+                raise ValueError("lead_id or practice_id is required")
         if not row:
-            raise ValueError("lead not found")
+            raise ValueError("booking context not found")
+        return row
+
+    def availability(
+        self,
+        trace: WorkflowTrace,
+        lead_id: str | None,
+        start: date | None,
+        days: int = 14,
+        *,
+        practice_id: int | None = None,
+        limit: int | None = 10,
+    ) -> dict[str, Any]:
+        row = self._booking_context(lead_id, practice_id)
+        start = start or datetime.now(ZoneInfo(row["stride_location_timezone"])).date()
+        trace.log("request_parsed", lead_id=lead_id, start_date=start.isoformat(), days=days)
         slots = self.providers.stride_availability(
             trace,
             location=row["stride_location_id"],
@@ -37,32 +90,136 @@ class BookingService:
             clinician_ids=row["stride_clinician_ids"],
             start_date=start,
             end_date=min(start + timedelta(days=max(1, days) - 1), start + timedelta(days=30)),
-        )[:5]
+        )
+        slots.sort(key=lambda item: (item.local_date, item.local_time, item.clinician_id))
+        if limit is not None:
+            slots = slots[:limit]
         expires = int(time.time()) + 300
         values = []
         for slot in slots:
-            payload = json.dumps(
-                {
-                    "lead_id": lead_id,
-                    "clinician_id": slot.clinician_id,
-                    "date": slot.local_date,
-                    "time": slot.local_time,
-                    "timezone": slot.timezone,
-                },
-                separators=(",", ":"),
-            )
-            display_time = datetime.strptime(slot.local_time, "%H:%M:%S").replace(
-                tzinfo=UTC
-            ).strftime("%I:%M %p").lstrip("0")
+            display_time = self._spoken_time(slot.local_time)
             values.append({
                 "date": slot.local_date,
                 "time": slot.local_time,
                 "spoken_time": display_time,
                 "timezone": slot.timezone,
-                "slot_token": sign_slot(payload, expires),
+                "slot_token": self._slot_token(str(lead_id or ""), slot, expires),
             })
         trace.log("availability_prepared", slot_count=len(values))
         return {"status": "ok", "slots": values}
+
+    def availability_message(
+        self,
+        trace: WorkflowTrace,
+        *,
+        lead_id: str | None,
+        practice_id: int | None,
+        requested_date: date | None,
+        requested_time: str | None,
+    ) -> str:
+        parsed_time = self._parse_time(requested_time) if requested_time else None
+        result = self.availability(
+            trace,
+            lead_id,
+            requested_date,
+            14,
+            practice_id=practice_id,
+            limit=None,
+        )
+        slots = result["slots"]
+        if requested_date:
+            same_day = [slot for slot in slots if slot["date"] == requested_date.isoformat()]
+            if parsed_time:
+                normalized = parsed_time.strftime("%H:%M:%S")
+                if any(slot["time"] == normalized for slot in same_day):
+                    return (
+                        f"Yes, {parsed_time.strftime('%I:%M %p').lstrip('0')} on "
+                        f"{requested_date.isoformat()} is open. Shall I book it?"
+                    )
+                same_day.sort(
+                    key=lambda slot: abs(
+                        clock_time.fromisoformat(slot["time"]).hour * 60
+                        + clock_time.fromisoformat(slot["time"]).minute
+                        - (parsed_time.hour * 60 + parsed_time.minute)
+                    )
+                )
+            if same_day:
+                offered = " and ".join(slot["spoken_time"] for slot in same_day[:2])
+                return (
+                    f"The closest openings on {requested_date.isoformat()} are {offered}. "
+                    "Which works better?"
+                    if parsed_time
+                    else f"I have {offered} open on {requested_date.isoformat()}. Which works better?"
+                )
+            later = slots[:2]
+            if later:
+                offered = " and ".join(
+                    f"{slot['spoken_time']} on {slot['date']}" for slot in later
+                )
+                return (
+                    f"Nothing is open on {requested_date.isoformat()}. The next openings are "
+                    f"{offered}. Would either work?"
+                )
+            return (
+                f"Nothing is open from {requested_date.isoformat()} through the next two weeks. "
+                "Would you like a staff member to look further out?"
+            )
+        if slots:
+            offered = " and ".join(
+                f"{slot['spoken_time']} on {slot['date']}" for slot in slots[:2]
+            )
+            return f"The next openings are {offered}. Which works better?"
+        return "I could not find an opening in the next two weeks. Would you like staff to look further out?"
+
+    def book_at(
+        self,
+        trace: WorkflowTrace,
+        *,
+        lead_id: str,
+        event_id: int | None,
+        appointment_date: date,
+        appointment_time: str,
+        patient_data: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        with transaction() as conn:
+            existing = conn.execute(
+                "select state,stride_appointment_id from appointments where lead_id=%s "
+                "and state in ('booking','scheduled','unknown') order by id desc limit 1",
+                (lead_id,),
+            ).fetchone()
+        if existing:
+            if existing["state"] == "booking":
+                return {"status": "booking_in_progress"}
+            if existing["state"] == "unknown":
+                return {"status": "manual_review"}
+            return {
+                "status": "already_booked",
+                "appointment_id": existing["stride_appointment_id"],
+            }
+        parsed_time = self._parse_time(appointment_time)
+        context = self._booking_context(lead_id)
+        if not context["stride_booking_enabled"]:
+            return {"status": "configuration_required"}
+        slots = self.providers.stride_availability(
+            trace,
+            location=context["stride_location_id"],
+            duration=context["stride_default_duration_mins"],
+            clinician_ids=context["stride_clinician_ids"],
+            start_date=appointment_date,
+            end_date=appointment_date,
+        )
+        normalized = parsed_time.strftime("%H:%M:%S")
+        slot = next(
+            (
+                item for item in slots
+                if item.local_date == appointment_date.isoformat() and item.local_time == normalized
+            ),
+            None,
+        )
+        if slot is None:
+            return {"status": "slot_unavailable"}
+        token = self._slot_token(lead_id, slot, int(time.time()) + 300)
+        return self.book(trace, lead_id, event_id, token, patient_data)
 
     def book(
         self,
@@ -80,7 +237,8 @@ class BookingService:
         with transaction() as conn:
             lead = conn.execute(
                 "select l.*,ps.stride_location_id,ps.stride_appointment_type_id,"
-                "ps.stride_default_duration_mins,ps.stride_case_title,ps.stride_location_timezone "
+                "ps.stride_default_duration_mins,ps.stride_case_title,ps.stride_location_timezone,"
+                "ps.stride_booking_enabled "
                 "from leads l join practice_settings ps on ps.practice_id=l.practice_id "
                 "where l.id=%s for update of l",
                 (lead_id,),
@@ -119,30 +277,62 @@ class BookingService:
                 "and state in ('booking','scheduled','unknown') order by id desc limit 1", (lead_id,),
             ).fetchone()
             if existing:
+                if existing["state"] == "booking":
+                    return {"status": "booking_in_progress"}
+                if existing["state"] == "unknown":
+                    return {"status": "manual_review"}
                 return {
                     "status": "already_booked",
                     "appointment_id": existing["stride_appointment_id"],
                 }
-            booking_key = (
-                f"{lead_id}:{slot['date']}:{slot['time']}:{lead['stride_appointment_type_id']}"
-            )
+            if not lead["stride_booking_enabled"]:
+                return {"status": "configuration_required"}
+            start_utc, end_utc = self._slot_utc(slot, lead["stride_default_duration_mins"])
+            booking_key = f"{lead_id}:{start_utc.isoformat()}"
             appointment = conn.execute(
-                "insert into appointments(lead_id,practice_id,outreach_event_id,booking_source,state,"
-                "booking_key,clinician_id,location_id,appointment_type_id) "
-                "values(%s,%s,%s,'voice_agent','booking',%s,%s,%s,%s) returning id",
-                (
-                    lead_id,
-                    lead["practice_id"],
-                    event_id,
-                    booking_key,
-                    slot["clinician_id"],
-                    lead["stride_location_id"],
-                    lead["stride_appointment_type_id"],
-                ),
+                "select id from appointments where booking_key=%s and state='failed' for update",
+                (booking_key,),
             ).fetchone()
+            if appointment:
+                conn.execute(
+                    "update appointments set state='booking',outreach_event_id=%s,stride_error=null,"
+                    "needs_staff_review=false,updated_at=now() where id=%s",
+                    (event_id, appointment["id"]),
+                )
+            else:
+                appointment = conn.execute(
+                    "insert into appointments(lead_id,practice_id,outreach_event_id,booking_source,state,"
+                    "booking_key,clinician_id,location_id,appointment_type_id) "
+                    "values(%s,%s,%s,'voice_agent','booking',%s,%s,%s,%s) "
+                    "on conflict do nothing returning id",
+                    (
+                        lead_id,
+                        lead["practice_id"],
+                        event_id,
+                        booking_key,
+                        slot["clinician_id"],
+                        lead["stride_location_id"],
+                        lead["stride_appointment_type_id"],
+                    ),
+                ).fetchone()
+                if not appointment:
+                    existing = conn.execute(
+                        "select id,state,stride_appointment_id from appointments where lead_id=%s "
+                        "and state in ('booking','scheduled','unknown') order by id desc limit 1",
+                        (lead_id,),
+                    ).fetchone()
+                    if not existing or existing["state"] == "booking":
+                        return {"status": "booking_in_progress"}
+                    if existing["state"] == "unknown":
+                        return {"status": "manual_review"}
+                    return {
+                        "status": "already_booked",
+                        "appointment_id": existing["stride_appointment_id"],
+                    }
             local_id = appointment["id"]
             trace.log("booking_reserved", appointment_id=local_id)
 
+        stage = "availability"
         try:
             live = self.providers.stride_availability(
                 trace,
@@ -159,6 +349,7 @@ class BookingService:
                 return {"status": "slot_unavailable"}
             patient_id = lead["stride_patient_id"]
             if not patient_id:
+                stage = "patient"
                 patient_id = self.providers.stride_create(trace, "patients", {
                     "first_name": lead["first_name"],
                     "last_name": lead["last_name"],
@@ -170,12 +361,25 @@ class BookingService:
                     },
                     "primary_address": {},
                 })
+                with transaction() as conn:
+                    conn.execute(
+                        "update leads set stride_patient_id=%s where id=%s and stride_patient_id is null",
+                        (patient_id, lead_id),
+                    )
+                lead["stride_patient_id"] = patient_id
             case_id = lead["stride_case_id"]
             if not case_id:
+                stage = "case"
                 case_id = self.providers.stride_create(
                     trace, "cases", {"patient_id": patient_id, "title": lead["stride_case_title"]}
                 )
-            start_utc, end_utc = self._slot_utc(slot, lead["stride_default_duration_mins"])
+                with transaction() as conn:
+                    conn.execute(
+                        "update leads set stride_case_id=%s where id=%s and stride_case_id is null",
+                        (case_id, lead_id),
+                    )
+                lead["stride_case_id"] = case_id
+            stage = "appointment"
             stride_id = self.providers.stride_create(trace, "appointments", {
                 "case_id": case_id,
                 "primary_attendee": slot["clinician_id"],
@@ -189,56 +393,96 @@ class BookingService:
         except ProviderError as exc:
             state = "unknown" if exc.ambiguous else "failed"
             self._mark_booking(local_id, state, str(exc))
-            if exc.code == "400" and "already exists" in str(exc).lower():
+            detail = str(exc).lower()
+            if exc.code == "400" and stage == "patient" and "already exists" in detail:
                 self._flag_review(lead_id, "Stride duplicate patient requires mapping")
+                return {"status": "manual_review"}
+            if exc.code == "400" and stage == "appointment" and "overlapping" in detail:
+                return {"status": "slot_unavailable"}
+            if exc.code == "400" and stage == "appointment" and "already exists" in detail:
+                self._flag_review(lead_id, "Stride reports an existing appointment; reconcile mapping")
                 return {"status": "manual_review"}
             if exc.ambiguous:
                 self._flag_review(lead_id, "ambiguous Stride booking result; do not retry")
                 return {"status": "manual_review"}
+            if exc.retryable:
+                return {"status": "retry_later"}
             return {"status": "failed"}
+        except Exception as exc:  # noqa: BLE001 - external progress may have occurred
+            self._mark_booking(local_id, "unknown", f"unexpected booking error: {type(exc).__name__}")
+            self._flag_review(lead_id, "unexpected Stride booking result; reconcile before retry")
+            return {"status": "manual_review"}
 
-        with transaction() as conn:
-            conn.execute(
-                "update leads set stride_patient_id=%s,stride_case_id=%s where id=%s",
-                (patient_id, case_id, lead_id),
-            )
-            conn.execute(
-                "update appointments set state='scheduled',stride_appointment_id=%s,start_utc=%s,"
-                "end_utc=%s,confirmed_at=now(),updated_at=now() where id=%s",
-                (stride_id, start_utc, end_utc, local_id),
-            )
-            if event_id is not None:
+        try:
+            with transaction() as conn:
                 conn.execute(
-                    "update outreach_events set status='delivered',settled_at=now(),settled_by='tool',"
-                    "outcome='booked' where id=%s and lead_id=%s "
-                    "and status not in ('delivered','failed','skipped')",
-                    (event_id, lead_id),
+                    "update appointments set state='scheduled',stride_appointment_id=%s,start_utc=%s,"
+                    "end_utc=%s,confirmed_at=now(),updated_at=now() where id=%s",
+                    (stride_id, start_utc, end_utc, local_id),
                 )
-            mark_booked(conn, lead_id, "stride_booking")
-            conn.execute(
-                "insert into notification_log(lead_id,appointment_id,notification_type,channel,status,payload) "
-                "values(%s,%s,'sms_appointment_booked','sms','queued',%s) on conflict do nothing",
-                (lead_id, local_id, json.dumps({"start_utc": start_utc.isoformat()})),
+        except Exception as exc:  # noqa: BLE001 - Stride is the booking source of truth
+            trace.log(
+                "booking_local_sync_failed",
+                appointment_id=local_id,
+                stride_appointment_id=stride_id,
+                error_category=type(exc).__name__,
             )
-            event_payload = {
-                "event_type": "appointment.booked.v1",
-                "event_id": str(uuid4()),
-                "lead_id": lead_id,
-                "first_name": lead["first_name"],
-                "last_name": lead["last_name"],
-                "email": lead["email"],
-                "phone": lead["phone_e164"],
-                "birthday": lead["date_of_birth"].isoformat(),
-                "appointment_type_id": lead["stride_appointment_type_id"],
-                "appointment_start_utc": start_utc.isoformat(),
-                "provider_id": slot["clinician_id"],
-                "stride_appointment_id": stride_id,
+            return {
+                "status": "confirmed_sync_pending",
+                "appointment_id": stride_id,
+                "spoken_confirmation": "Your appointment is confirmed. Our staff will verify the details.",
             }
-            conn.execute(
-                "insert into integration_outbox(event_id,event_type,aggregate_id,payload,status) "
-                "values(%s,'appointment.booked.v1',%s,%s,'pending') on conflict(event_id) do nothing",
-                (event_payload["event_id"], str(local_id), json.dumps(event_payload)),
+
+        try:
+            with transaction() as conn:
+                conn.execute(
+                    "update leads set stride_patient_id=%s,stride_case_id=%s where id=%s",
+                    (patient_id, case_id, lead_id),
+                )
+                if event_id is not None:
+                    conn.execute(
+                        "update outreach_events set status='delivered',settled_at=now(),settled_by='tool',"
+                        "outcome='booked' where id=%s and lead_id=%s "
+                        "and status not in ('delivered','failed','skipped')",
+                        (event_id, lead_id),
+                    )
+                mark_booked(conn, lead_id, "stride_booking")
+                conn.execute(
+                    "insert into notification_log(lead_id,appointment_id,notification_type,channel,status,payload) "
+                    "values(%s,%s,'sms_appointment_booked','sms','queued',%s) on conflict do nothing",
+                    (lead_id, local_id, json.dumps({"start_utc": start_utc.isoformat()})),
+                )
+                event_payload = {
+                    "event_type": "appointment.booked.v1",
+                    "event_id": str(uuid4()),
+                    "lead_id": lead_id,
+                    "first_name": lead["first_name"],
+                    "last_name": lead["last_name"],
+                    "email": lead["email"],
+                    "phone": lead["phone_e164"],
+                    "birthday": lead["date_of_birth"].isoformat(),
+                    "appointment_type_id": lead["stride_appointment_type_id"],
+                    "appointment_start_utc": start_utc.isoformat(),
+                    "provider_id": slot["clinician_id"],
+                    "stride_appointment_id": stride_id,
+                }
+                conn.execute(
+                    "insert into integration_outbox(event_id,event_type,aggregate_id,payload,status) "
+                    "values(%s,'appointment.booked.v1',%s,%s,'pending') on conflict(event_id) do nothing",
+                    (event_payload["event_id"], str(local_id), json.dumps(event_payload)),
+                )
+        except Exception as exc:  # noqa: BLE001 - Stride is the booking source of truth
+            trace.log(
+                "booking_local_sync_failed",
+                appointment_id=local_id,
+                stride_appointment_id=stride_id,
+                error_category=type(exc).__name__,
             )
+            return {
+                "status": "confirmed_sync_pending",
+                "appointment_id": stride_id,
+                "spoken_confirmation": "Your appointment is confirmed. Our staff will verify the details.",
+            }
         trace.log("booking_confirmed", appointment_id=local_id, stride_appointment_id=stride_id)
         local_display = datetime.fromisoformat(f"{slot['date']}T{slot['time']}").strftime(
             "%A, %B %d at %I:%M %p"

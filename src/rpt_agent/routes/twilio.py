@@ -6,10 +6,12 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from ..config import get_settings
 from ..db import transaction
 from ..observability import WorkflowTrace, trace_id_var
 from ..security import require_twilio_auth
-from ..services import explicit_opt_out
+from ..services.delivery import apply_twilio_message_status
+from ..services.lead_status import explicit_opt_out
 
 router = APIRouter(prefix="/api/v1/twilio", tags=["twilio"])
 
@@ -66,9 +68,12 @@ async def twilio_message_status(request: Request):
         raise
     sid = form_data.get("MessageSid", "")
     status = form_data.get("MessageStatus", "").lower()
-    mapped = status if status in {"queued", "sent", "delivered", "undelivered", "failed"} else "sent"
+    if not sid:
+        raise HTTPException(status_code=400, detail="missing MessageSid")
+    if status not in {"queued", "sent", "delivered", "undelivered", "failed"}:
+        raise HTTPException(status_code=400, detail="invalid MessageStatus")
     with transaction() as conn:
-        receipt_id = f"message-status:{sid}:{mapped}"
+        receipt_id = f"message-status:{sid}:{status}"
         inserted = conn.execute(
             "insert into provider_events(provider,event_id,event_type,payload) "
             "values('twilio',%s,'message-status',%s) on conflict(provider,event_id) do nothing returning id",
@@ -77,23 +82,19 @@ async def twilio_message_status(request: Request):
         if not inserted:
             trace.complete(outcome="duplicate")
             return {"ok": True, "duplicate": True}
-        conn.execute(
-            "update sms_messages set delivery_status=%s,delivered_at=case when %s='delivered' then now() "
-            "else delivered_at end,updated_at=now() where provider_message_id=%s",
-            (mapped, mapped, sid),
-        )
-        conn.execute(
-            "update notification_log set status=%s,delivered_at=case when %s='delivered' then now() "
-            "else delivered_at end,error=case when %s in ('failed','undelivered') then %s else error end,"
-            "updated_at=now() where provider_ref=%s",
-            (mapped, mapped, mapped, form_data.get("ErrorCode") or None, sid),
-        )
-        conn.execute(
-            "update test_usage_ledger set status=%s,finalized_at=case when %s in "
-            "('delivered','failed','undelivered') then now() else finalized_at end "
-            "where provider='twilio' and provider_ref=%s",
-            (mapped, mapped, sid),
-        )
-        conn.execute("update provider_events set processed_at=now() where id=%s", (inserted["id"],))
-    trace.complete(message_status=mapped)
+        matched = apply_twilio_message_status(conn, form_data)
+        if matched:
+            conn.execute("update provider_events set processed_at=now() where id=%s", (inserted["id"],))
+        else:
+            conn.execute(
+                "update provider_events set processing_error=%s,processing_attempts=1,"
+                "next_attempt_at=now()+interval '1 minute',"
+                "dead_lettered_at=case when %s<=1 then now() else null end where id=%s",
+                (
+                    "Twilio message status arrived before its local send record",
+                    get_settings().retry_max_attempts,
+                    inserted["id"],
+                ),
+            )
+    trace.complete(message_status=status, matched=bool(matched))
     return {"ok": True}

@@ -12,6 +12,13 @@ class ToolCall:
     arguments: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ToolRequest:
+    tool_call_id: str | None
+    call_id: str | None
+    arguments: dict[str, Any]
+
+
 def extract_vapi_context(body: dict[str, Any]) -> dict[str, Any]:
     """Extract transport-supplied values without trusting model-generated arguments.
 
@@ -108,6 +115,20 @@ def parse_tool_calls(body: dict[str, Any]) -> list[ToolCall]:
     return calls
 
 
+def parse_tool_request(body: dict[str, Any]) -> ToolRequest:
+    """Accept one Vapi tool envelope or a flat JSON body for direct endpoint testing."""
+    calls = parse_tool_calls(body)
+    message = body.get("message") if isinstance(body, dict) else None
+    message = message if isinstance(message, dict) else {}
+    call = message.get("call") if isinstance(message.get("call"), dict) else {}
+    call_id = call.get("id") or body.get("call_id")
+    if calls:
+        return ToolRequest(calls[0].tool_call_id, str(call_id) if call_id else None, calls[0].arguments)
+    arguments = dict(body) if isinstance(body, dict) else {}
+    arguments.pop("vapi_secret", None)
+    return ToolRequest(None, str(call_id) if call_id else None, arguments)
+
+
 def _single_line(value: Any) -> str:
     if isinstance(value, str):
         text = value
@@ -128,3 +149,10 @@ def tool_error(call_id: str, value: Any, name: str | None = None) -> dict[str, s
     if name:
         result["name"] = name
     return result
+
+
+def direct_tool_response(tool_call_id: str | None, message: str) -> dict[str, Any]:
+    """Return Vapi's result envelope, or a small flat response for Postman/terminal calls."""
+    if tool_call_id:
+        return {"results": [tool_success(tool_call_id, message)]}
+    return {"message": _single_line(message)}

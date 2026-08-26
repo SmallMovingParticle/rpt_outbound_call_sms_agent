@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     mock_scenario: str = "success"
     request_timeout_seconds: float = 10.0
     db_pool_timeout_seconds: float = 5.0
+    http_retry_attempts: int = Field(default=3, ge=1, le=5)
+    http_retry_base_seconds: float = Field(default=0.5, ge=0.1, le=5.0)
+    retry_max_attempts: int = Field(default=5, ge=1, le=20)
+    retry_base_seconds: int = Field(default=60, ge=1, le=3600)
+    retry_max_seconds: int = Field(default=3600, ge=1, le=86400)
 
     def mode(self, provider: str) -> str:
         override = getattr(self, f"{provider}_mode", None)
@@ -57,6 +62,7 @@ class Settings(BaseSettings):
 
     def runtime_errors(self, service: str) -> list[str]:
         errors: list[str] = []
+        deployment_env = self.app_env.lower() in {"preproduction", "preprod", "staging", "production", "prod"}
         if service in {"api", "worker", "cli"} and not self.supabase_db_url:
             errors.append("SUPABASE_DB_URL is required")
         elif service in {"api", "worker", "cli"} and "db.example.supabase.co" in self.supabase_db_url:
@@ -69,20 +75,63 @@ class Settings(BaseSettings):
         if service in {"api", "worker"}:
             required: dict[str, str] = {}
             if self.mode("vapi") == "real":
-                required.update(VAPI_API_KEY=self.vapi_api_key)
+                required.update(
+                    VAPI_API_KEY=self.vapi_api_key,
+                    VAPI_ASSISTANT_ID=self.vapi_assistant_id,
+                    VAPI_PHONE_NUMBER_ID=self.vapi_phone_number_id,
+                    VAPI_WEBHOOK_SECRET=self.vapi_webhook_secret,
+                    PUBLIC_BASE_URL=self.public_base_url,
+                )
             if self.mode("twilio") == "real":
                 required.update(
                     TWILIO_ACCOUNT_SID=self.twilio_account_sid,
                     TWILIO_AUTH_TOKEN=self.twilio_auth_token,
+                    TWILIO_FROM_NUMBER=self.twilio_from_number,
+                    PUBLIC_BASE_URL=self.public_base_url,
                 )
             if self.mode("stride") == "real":
                 required.update(STRIDE_API_TOKEN=self.stride_api_token)
+            if self.mode("keap") == "real":
+                required.update(
+                    KEAP_HANDOFF_URL=self.keap_handoff_url,
+                    KEAP_HANDOFF_SECRET=self.keap_handoff_secret,
+                )
             errors.extend(
                 f"{name} is required when its provider is real"
                 for name, value in required.items() if not value
             )
-        if self.test_mode and self.app_env.lower() in {"production", "prod"}:
-            errors.append("TEST_MODE cannot be enabled in production")
+        if deployment_env:
+            database_url = self.supabase_db_url.lower()
+            if not any(
+                value in database_url for value in ("sslmode=require", "sslmode=verify-full")
+            ):
+                errors.append("SUPABASE_DB_URL must set sslmode=require or verify-full")
+            if self.public_base_url and not self.public_base_url.startswith("https://"):
+                errors.append("PUBLIC_BASE_URL must use HTTPS")
+            if "your-ngrok-domain" in self.public_base_url:
+                errors.append("PUBLIC_BASE_URL still contains the example hostname")
+            if self.mode("vapi") == "real" and self.vapi_webhook_secret == "local-vapi-secret":
+                errors.append("VAPI_WEBHOOK_SECRET must be replaced outside local development")
+            if self.mode("twilio") == "real" and self.twilio_account_sid == "AC" + "0" * 32:
+                errors.append("TWILIO_ACCOUNT_SID still contains the example value")
+            if self.mode("twilio") == "real" and self.twilio_from_number == "+15550000001":
+                errors.append("TWILIO_FROM_NUMBER still contains the example value")
+            if self.slot_token_secret in {
+                "local-slot-secret",
+                "replace-this-for-non-local-use",
+            }:
+                errors.append("SLOT_TOKEN_SECRET must be replaced outside local development")
+            if self.mode("keap") == "real":
+                if not self.keap_handoff_url.startswith("https://"):
+                    errors.append("KEAP_HANDOFF_URL must use HTTPS")
+                if "example.com" in self.keap_handoff_url:
+                    errors.append("KEAP_HANDOFF_URL still contains the example hostname")
+                if self.keap_handoff_secret == "local-keap-secret":
+                    errors.append("KEAP_HANDOFF_SECRET must be replaced outside local development")
+        if self.test_mode and deployment_env:
+            errors.append("TEST_MODE cannot be enabled in pre-production or production")
+        if self.retry_max_seconds < self.retry_base_seconds:
+            errors.append("RETRY_MAX_SECONDS must be greater than or equal to RETRY_BASE_SECONDS")
         return errors
 
 

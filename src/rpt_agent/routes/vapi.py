@@ -5,10 +5,13 @@ from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, HTTPException, Request
 
+from ..config import get_settings
 from ..db import transaction
 from ..observability import WorkflowTrace, trace_id_var
 from ..security import require_vapi_auth
-from ..services import BookingService, apply_call_outcome, process_vapi_end_report
+from ..services.booking import BookingService
+from ..services.delivery import process_vapi_end_report
+from ..services.lead_status import apply_call_outcome
 from ..vapi_contract import parse_tool_calls, tool_error, tool_success
 
 router = APIRouter(prefix="/api/v1/vapi", tags=["vapi"])
@@ -143,7 +146,9 @@ async def vapi_webhook(request: Request):
         with transaction() as conn:
             conn.execute(
                 "update provider_events set processing_error=%s,processing_attempts=processing_attempts+1,"
-                "next_attempt_at=now()+interval '1 minute' where id=%s",
-                (str(exc)[:500], inserted["id"]),
+                "next_attempt_at=now()+interval '1 minute',"
+                "dead_lettered_at=case when processing_attempts+1>=%s then now() else null end "
+                "where id=%s",
+                (str(exc)[:500], get_settings().retry_max_attempts, inserted["id"]),
             )
     return {"ok": True, "persisted": True}

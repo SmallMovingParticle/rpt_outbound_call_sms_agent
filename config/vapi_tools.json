@@ -3,104 +3,110 @@
     "type": "function",
     "function": {
       "name": "check_availability",
-      "description": "Check mocked Stride availability beginning on one requested date. Use only when the patient wants appointment options.",
+      "description": "Check live Stride availability. Use after the patient gives a preferred date or asks for the next openings.",
       "strict": true,
       "parameters": {
         "type": "object",
         "properties": {
-          "preferred_date": {
+          "date": {
             "type": "string",
-            "description": "First date to check in YYYY-MM-DD format. Never send a relative date."
+            "description": "Preferred date in YYYY-MM-DD. Omit only when the patient asks for the next openings."
+          },
+          "time": {
+            "type": "string",
+            "description": "Optional requested time, such as 9 AM, 2:30 PM, or 14:30."
           }
         },
-        "required": ["preferred_date"],
+        "required": [],
         "additionalProperties": false
       }
     },
     "server": {
-      "url": "https://cornmeal-sixtyfold-enclose.ngrok-free.dev/api/v1/vapi/tools",
-      "credentialId": "c6c3abf7-8a38-4ef2-8151-4a2a7cb15a97"
+      "url": "https://api.example.com/api/v1/tools/check-availability",
+      "credentialId": "managed-by-sync"
     },
     "parameters": [{"key": "lead_id", "value": "{{ lead_id }}"}],
     "async": false,
     "messages": [
-      {"type": "request-start", "content": "Let me check those times for you.", "blocking": false}
+      {"type": "request-start", "content": "Let me check the live schedule for you.", "blocking": false}
     ]
   },
   {
     "type": "function",
     "function": {
       "name": "create_appointment",
-      "description": "Create one mocked Stride appointment after the patient confirms a slot returned by check_availability.",
+      "description": "Create a real Stride appointment after the patient confirms an exact date and time returned by check_availability.",
       "strict": true,
       "parameters": {
         "type": "object",
         "properties": {
-          "slot_token": {
+          "date": {
             "type": "string",
-            "description": "Opaque slot_token returned for the exact selected time. Never invent or alter it."
+            "description": "The confirmed appointment date in YYYY-MM-DD."
           },
-          "first_name": {"type": "string", "description": "Patient's confirmed first name."},
-          "last_name": {"type": "string", "description": "Patient's confirmed last name."},
-          "date_of_birth": {
+          "time": {
             "type": "string",
-            "description": "Patient's confirmed date of birth in YYYY-MM-DD format."
+            "description": "The confirmed appointment time exactly as offered."
           }
         },
-        "required": ["slot_token", "first_name", "last_name", "date_of_birth"],
+        "required": ["date", "time"],
         "additionalProperties": false
       }
     },
     "server": {
-      "url": "https://cornmeal-sixtyfold-enclose.ngrok-free.dev/api/v1/vapi/tools",
-      "credentialId": "c6c3abf7-8a38-4ef2-8151-4a2a7cb15a97"
+      "url": "https://api.example.com/api/v1/tools/create-appointment",
+      "credentialId": "managed-by-sync"
     },
     "parameters": [
       {"key": "lead_id", "value": "{{ lead_id }}"},
-      {"key": "outreach_event_id", "value": "{{ outreach_event_id }}"}
+      {"key": "outreach_event_id", "value": "{{ outreach_event_id }}"},
+      {"key": "date_of_birth", "value": "{{ date_of_birth }}"},
+      {"key": "case_title", "value": "{{ case_title }}"},
+      {"key": "location", "value": "{{ location }}"}
     ],
     "async": false,
     "messages": [
-      {"type": "request-start", "content": "I am confirming that appointment now.", "blocking": false}
+      {"type": "request-start", "content": "I am confirming that appointment with Stride now.", "blocking": false}
     ]
   },
   {
     "type": "function",
     "function": {
       "name": "update_lead_status",
-      "description": "Record exactly one final call outcome. Call after booking or immediately before ending any answered call.",
+      "description": "Record the call outcome while the call is active. Call once before ending every answered call.",
       "strict": true,
       "parameters": {
         "type": "object",
         "properties": {
-          "outcome": {
+          "status": {
             "type": "string",
             "enum": [
-              "booked", "not_interested", "callback", "transferred", "manual",
-              "call_opt_out", "do_not_contact"
+              "booked", "declined", "callback_scheduled", "booking_link",
+              "transferred_human", "no_answer", "wrong_person", "call_opt_out", "do_not_contact"
             ],
-            "description": "Final outcome. not_interested is not an opt-out; call_opt_out blocks calls only; do_not_contact blocks all outreach."
+            "description": "The final conversational outcome. Use explicit opt-out statuses only when the patient asks."
           },
           "callback_requested_at": {
             "type": "string",
-            "description": "For callback only: timezone-aware ISO 8601 time within 30 days. Otherwise send an empty string."
+            "description": "For callback_scheduled only: timezone-aware ISO 8601 within 30 days. Otherwise an empty string."
           },
-          "callback_notes": {
+          "notes": {
             "type": "string",
-            "description": "Short callback instruction only, with no medical details. Otherwise send an empty string."
+            "description": "A short operational note with no medical details, or an empty string."
           }
         },
-        "required": ["outcome", "callback_requested_at", "callback_notes"],
+        "required": ["status", "callback_requested_at", "notes"],
         "additionalProperties": false
       }
     },
     "server": {
-      "url": "https://cornmeal-sixtyfold-enclose.ngrok-free.dev/api/v1/vapi/tools",
-      "credentialId": "c6c3abf7-8a38-4ef2-8151-4a2a7cb15a97"
+      "url": "https://api.example.com/api/v1/webhooks/vapi/lead-status",
+      "credentialId": "managed-by-sync"
     },
     "parameters": [
       {"key": "lead_id", "value": "{{ lead_id }}"},
-      {"key": "outreach_event_id", "value": "{{ outreach_event_id }}"}
+      {"key": "outreach_event_id", "value": "{{ outreach_event_id }}"},
+      {"key": "call_id", "value": "{{ call.id }}"}
     ],
     "async": false
   }

@@ -12,7 +12,7 @@ from .config import get_settings
 from .db import transaction
 from .observability import WorkflowTrace, configure_logging
 from .providers import ProviderClients
-from .services import process_pending_integrations
+from .services.delivery import process_pending_integrations
 from .sftp_fixtures import load_stride_fixtures
 from .worker import format_phone, materialize_cadence, run_tick
 

@@ -1,18 +1,30 @@
 # RPT Outreach Agent
 
-Local-first, production-shaped Python service for the Rausch PT 14-day outreach cadence. The current
-runtime uses real Vapi outbound calling and real Twilio messaging, with deterministic local mocks for
-Stride booking and the Keap-team handoff. Production cadence spreading is unchanged; accelerated time applies only to
-rows explicitly marked `is_test=true`.
+Pre-production Python service for the Rausch PT 14-day outreach cadence. Vapi, Twilio, Stride, Supabase,
+and the Keap-team handoff have real provider adapters; mocks remain available only through an explicit
+Compose profile for automated/local testing. Production cadence spreading is unchanged.
 
 ## Project layout
 
 ```text
 src/rpt_agent/
   api.py                 FastAPI assembly and trace middleware
-  routes/                Vapi, Twilio, and health HTTP boundaries
-  services/              Booking, lead-state, and integration workflows
-  providers.py           Real/mock provider adapters
+  routes/
+    availability.py      POST /api/v1/tools/check-availability
+    appointments.py      POST /api/v1/tools/create-appointment
+    leads.py             POST /api/v1/webhooks/vapi/lead-status
+    vapi.py              Compatibility tool endpoint and durable end report
+    twilio.py             Signed inbound/status callbacks
+  services/
+    booking.py            Stride booking workflow and idempotency
+    lead_status.py        Lead/call transitions and duplicate guard
+    delivery.py           SMS/outbox/webhook delivery
+    stride_service.py     Stride HTTP contract
+    vapi_service.py       Vapi outbound-call contract
+    twilio_service.py     Twilio message contract
+    keap_service.py       Signed Keap-team handoff contract
+    provider_http.py      Shared bounded HTTP/retry behavior
+  providers.py           Small compatibility facade over provider services
   worker.py              Cadence claim, dispatch, settlement, and sweepers
   mock_server.py         Deterministic Stride/Twilio/Keap/Vapi fixtures
   usage_report.py        Real test-provider cost ledger refresh and client report
@@ -24,29 +36,28 @@ scripts/                  Local start and Vapi synchronization utilities
 tests/                    Contract, unit, scenario, and optional DB tests
 ```
 
-This adopts the useful API/service/config separation from the reference repository without copying its
-duplicated scheduler implementations or AWS-only runtime complexity.
+This keeps the useful API/service/config separation from the reference repository without its duplicated
+schedulers, fixed timezone offsets, raw request logging, or AWS-only runtime complexity.
 
 ## First local start
 
-1. Copy `.env.example` to `.env`. Use only a hosted **development** Supabase database.
-2. Set `SUPABASE_DB_URL` and the Vapi values. For the current hybrid setup use:
+1. Copy `.env.example` to `.env` and fill every blank/placeholder from the pre-production secret store.
+2. Use the real provider profile:
 
    ```dotenv
-   APP_ENV=development
+   APP_ENV=preproduction
    VAPI_MODE=real
    TWILIO_MODE=real
-   STRIDE_MODE=mock
-   KEAP_MODE=mock
-   TEST_MODE=true
-   TEST_CADENCE_DAY_MINUTES=1
+   STRIDE_MODE=real
+   KEAP_MODE=real
+   TEST_MODE=false
    ```
 
-3. Apply/verify the schema and seed the cadence:
+3. Apply/verify the schema. `rpt seed` is for a fresh sandbox only; it intentionally leaves
+   `stride_booking_enabled=false`.
 
    ```powershell
    docker compose run --rm api rpt migrate
-   docker compose run --rm api rpt seed
    docker compose run --rm api rpt verify
    ```
 
@@ -56,13 +67,33 @@ duplicated scheduler implementations or AWS-only runtime complexity.
    docker compose up --build -d
    Invoke-RestMethod http://localhost:8000/health
    Invoke-RestMethod http://localhost:8000/ready
-   Invoke-RestMethod http://localhost:9000/health
-   docker compose logs -f api worker mock-provider
+   docker compose logs -f api worker
    ```
 
-The API docs are at `http://localhost:8000/docs`; mock-provider docs are at
-`http://localhost:9000/docs`. JSON step logs are also rotated under `logs/`. `X-Trace-ID` correlates
+The API docs are at `http://localhost:8000/docs`. JSON step logs are also rotated under `logs/`.
+`X-Trace-ID` correlates
 API, provider, worker, and webhook activity, and PHI/secrets are redacted.
+
+Before enabling real Stride appointment creation, verify the location ID, clinician IDs, numeric Initial
+Evaluation appointment-type ID, duration, and IANA booking timezone in `practice_settings`, then set
+`stride_booking_enabled=true`. Availability remains usable while this gate is false. The supplied Stride
+material did not include the numeric appointment-type ID, so the repository does not guess it.
+
+After confirming that value in Stride, enable only the intended practice:
+
+```sql
+update public.practice_settings ps
+set stride_appointment_type_id = <confirmed_numeric_id>,
+    stride_booking_enabled = true
+from public.practices p
+where p.id = ps.practice_id and p.slug = 'rausch-pt';
+```
+
+For deterministic tests only, start the mock provider explicitly:
+
+```powershell
+docker compose --profile mock up --build
+```
 
 ## ngrok and Vapi
 
@@ -74,7 +105,8 @@ $env:PYTHONPATH = "src"
 python scripts/sync_vapi.py
 ```
 
-That command idempotently synchronizes the three current synchronous custom tools and assistant webhook.
+That command idempotently synchronizes the three synchronous tools to their direct endpoints and the
+assistant end-report webhook.
 It preserves Vapi's built-in transfer/end-call tools. Tool requests accept the current
 `message.toolCallList` contract and a narrow legacy compatibility shape; authenticated business failures
 still return HTTP 200 with ordered, single-line results using the exact `toolCallId`.
@@ -104,9 +136,8 @@ docker compose logs -f worker api
 Get-Content logs/rpt-agent-worker.jsonl -Wait
 ```
 
-Vapi makes the real phone call. The assistant's availability and appointment tools tunnel through ngrok
-to this API, which calls the local Stride mock. Twilio sends real SMS and authenticated status callbacks;
-the Keap handoff remains mocked.
+This accelerated synthetic flow is retained only as an explicit development tool. Do not enable it in the
+pre-production runtime profile.
 
 ## Test usage and client cost report
 
@@ -136,6 +167,25 @@ Provider invoices remain the accounting source of truth because prices can settl
 
 Provider modes are independent. Changing `VAPI_MODE`, `TWILIO_MODE`, `STRIDE_MODE`, or `KEAP_MODE`
 switches adapters without modifying cadence or booking logic.
+
+The Keap integration is the signed, event-ID-deduplicated webhook owned by the Keap team. It is real when
+`KEAP_MODE=real` and `KEAP_HANDOFF_URL` points to that receiver. Direct Keap REST/OAuth contact mutation is
+not implemented because no Keap application/OAuth contract was supplied.
+
+## Retry and reconciliation
+
+Transient, safely repeatable provider failures use bounded exponential backoff with jitter. HTTP 429 honors
+`Retry-After`; idempotent reads and the event-ID-deduplicated Keap handoff may be retried. Credential,
+validation, and other permanent failures stop immediately. Ambiguous Vapi call, Twilio SMS, and Stride
+creation results are never blindly repeated because the provider may already have accepted them; those rows
+become `unknown` and require provider reconciliation.
+
+Durable retries default to five attempts, starting at 60 seconds and capped at one hour unless a longer
+provider `Retry-After` must be honored. Short in-request
+retries default to three attempts and are limited to safe operations and brief waits. Configure them with
+`RETRY_MAX_ATTEMPTS`, `RETRY_BASE_SECONDS`, `RETRY_MAX_SECONDS`, `HTTP_RETRY_ATTEMPTS`, and
+`HTTP_RETRY_BASE_SECONDS`. Run `rpt migrate` before starting the updated worker so the retry,
+integration-audit, outcome-source, and Stride booking-gate schema from migrations 013-015 is present.
 
 The `.env` file is git-ignored and excluded from the Docker build context. Since credentials pasted into
 chat should be treated as exposed, rotate them before production use and rerun the Vapi sync after updating

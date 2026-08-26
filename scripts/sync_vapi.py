@@ -1,4 +1,4 @@
-"""Idempotently configure the local ngrok tools on the selected Vapi assistant."""
+"""Idempotently configure the booking tools on the selected Vapi assistant."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import httpx
 from rpt_agent.config import get_settings
 
 ROOT = Path(__file__).resolve().parents[1]
-CREDENTIAL_NAME = "RPT Local Ngrok Tool Auth"
+CREDENTIAL_NAME = "RPT Booking API Auth"
 
 
 def checked(response: httpx.Response) -> Any:
@@ -50,17 +50,21 @@ def main() -> None:
             (ROOT / "config" / "vapi_tools.json").read_text(encoding="utf-8")
         )
         existing_tools = checked(client.get("/tool", params={"limit": 100}))
-        target_url = f"{settings.public_base_url.rstrip('/')}/api/v1/vapi/tools"
+        paths = {
+            "check_availability": "/api/v1/tools/check-availability",
+            "create_appointment": "/api/v1/tools/create-appointment",
+            "update_lead_status": "/api/v1/webhooks/vapi/lead-status",
+        }
         tool_ids: list[str] = []
         for definition in definitions:
-            definition["server"] = {"url": target_url, "credentialId": credential_id}
             name = definition["function"]["name"]
+            target_url = f"{settings.public_base_url.rstrip('/')}{paths[name]}"
+            definition["server"] = {"url": target_url, "credentialId": credential_id}
             existing = next(
                 (
                     item for item in existing_tools
                     if item.get("type") == "function"
                     and (item.get("function") or {}).get("name") == name
-                    and (item.get("server") or {}).get("url") == target_url
                 ),
                 None,
             )

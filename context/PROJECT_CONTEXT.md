@@ -1,6 +1,6 @@
 # RPT Agent — Complete Project Context and Handoff
 
-Last updated: 2026-08-25 (Asia/Calcutta)
+Last updated: 2026-08-26 (Asia/Calcutta)
 
 This is the durable context file for future Codex, Claude, and human development sessions. Read this file
 before changing the project. Update it whenever a material decision, schema migration, integration contract,
@@ -19,6 +19,8 @@ content.
 The project began from material supplied in `C:\Users\chaud\Downloads`:
 
 - `RPT_AI_Agent_Codex_Project_Brief.md` — primary project description.
+- `BOOKING_API.md` — final direct endpoint, idempotency, audit, and lead-status contract supplied on
+  2026-08-26.
 - `Stride Info-2026082419333678.pdf` — supplied Stride API contract.
 - `Keap-2026082419332849.pdf` — supplied Keap-team handoff requirements.
 - `schema.sql`, `tools_api.py`, `worker.py`, and `ARCHITECTURE.md` — earlier database/API/worker design.
@@ -33,36 +35,58 @@ The reference implementation reviewed was:
 - Local clone: `F:\rpt\refrences_git_clone\aws_deployed_raush_pt`
 - Review notes: `docs/REFERENCE_REPOSITORY_REVIEW.md`
 
+Current public documentation checked for the pre-production implementation:
+
+- Vapi custom tools, static parameters, and server authentication:
+  `https://docs.vapi.ai/tools/custom-tools`, `https://docs.vapi.ai/tools/static-variables-and-aliases`, and
+  `https://docs.vapi.ai/server-url/server-authentication`.
+- Supabase/Postgres connection pooling, SSL, security, and production checklist:
+  `https://supabase.com/docs/guides/database/connecting-to-postgres`,
+  `https://supabase.com/docs/guides/database/secure-data`, and
+  `https://supabase.com/docs/guides/deployment/going-into-prod`.
+- Twilio message status callbacks, webhook signature validation, and opt-out behavior:
+  `https://www.twilio.com/docs/messaging/api/message-resource`,
+  `https://www.twilio.com/docs/usage/webhooks/webhooks-security`, and
+  `https://www.twilio.com/docs/messaging/tutorials/advanced-opt-out`.
+- Keap REST/OAuth and rest-hook contracts: `https://developer.keap.com/docs/rest/1000/` and
+  `https://developer.keap.com/rest-hook-documentation/`. Direct OAuth mutation was not inferred from the
+  team-owned signed-handoff specification.
+
+No public official Stride developer documentation was located; the supplied PDF and the read-only demo
+response are authoritative for the implemented Stride surface.
+
 Useful separation patterns from that repository were adopted: thin HTTP routes, service modules, centralized
 configuration, provider adapters, and worker boundaries. Duplicated schedulers and AWS-specific runtime
 complexity were deliberately not copied.
 
 ## Product goal
 
-Build an industry-quality, local-first Python outreach agent for Rausch Physical Therapy. It ingests leads,
+Build an industry-quality pre-production Python outreach agent for Rausch Physical Therapy. It ingests leads,
 materializes the existing 14-day cadence, dispatches Vapi calls and Twilio messages, books an Initial
 Evaluation through Stride, settles lead/event state, sends one confirmation SMS, and publishes a deduplicated
 `appointment.booked.v1` handoff for the Keap team.
 
-The milestone runs locally against a hosted Supabase **development** Postgres database. No production patient
-data is permitted. All fixtures and test leads must be synthetic.
+The codebase is now in the **pre-production** phase. Runtime adapters and HTTP contracts are real; deterministic
+mocks remain only for automated and explicitly selected local testing. Until production agreements, security
+review, and operational controls are complete, no production patient data is permitted and all test fixtures
+must remain synthetic.
 
 ## Scope and non-goals
 
 Current scope:
 
-- Local FastAPI API, cadence worker, deterministic mock-provider server, migrations, seeds, tests, Docker,
-  PowerShell/cross-platform commands, ngrok, and Vapi tool integration.
-- Real Vapi outbound calls can be enabled for explicitly consented synthetic phone numbers.
-- Stride, Twilio, SFTP input, and Keap-team handoff remain mocked by default.
-- Supabase MCP is used during development for inspection, migrations, verification, and debugging. Runtime
-  code connects with `SUPABASE_DB_URL` and never depends on MCP.
+- FastAPI API, cadence worker, real Vapi/Twilio/Stride adapters, the signed Keap-team handoff, migrations,
+  tests, Docker, PowerShell/cross-platform commands, and Vapi tool integration.
+- Direct authenticated booking endpoints for live availability, real appointment creation, and lead status.
+- Hosted Supabase Postgres accessed at runtime through `SUPABASE_DB_URL`; no runtime MCP dependency.
+- Deterministic provider mocks retained behind the explicit Compose `mock` profile for tests only.
 
 Explicitly out of scope:
 
 - Any redesign of stable scheduling or cadence time spreading.
 - EC2 provisioning, Terraform, load balancers, or AWS runtime work in this milestone.
-- Real Keap contacts/tags/email/OAuth or CRM internals.
+- Direct Keap contacts/tags/email/OAuth or CRM internals; the supplied signed team-owned webhook is the
+  implemented real boundary.
 - Speculative Stride patient matching.
 - Real Stride cancellation/rescheduling APIs until those APIs are supplied.
 - A fake SFTP daemon; fixture CSV files are used instead.
@@ -72,50 +96,43 @@ requirement needs them.
 
 ## Current runtime modes
 
-The intended current hybrid configuration is:
+The intended pre-production configuration is:
 
 ```dotenv
-APP_ENV=development
+APP_ENV=preproduction
 VAPI_MODE=real
 TWILIO_MODE=real
-STRIDE_MODE=mock
-KEAP_MODE=mock
-TEST_MODE=true
-TEST_CADENCE_DAY_MINUTES=1
-PUBLIC_BASE_URL=https://cornmeal-sixtyfold-enclose.ngrok-free.dev
+STRIDE_MODE=real
+KEAP_MODE=real
+TEST_MODE=false
+PUBLIC_BASE_URL=https://<preproduction-api-host>
 ```
 
 Provider modes are independent and fall back to legacy `PROVIDER_MODE`. Switching a provider between mock
 and real must require configuration only; cadence and booking logic must not change.
 
-The local `.env` contains the current hosted development database URL and provider credentials. It is ignored
-by Git and excluded from the Docker build context. `.env.example` contains placeholders.
+The local `.env` may contain the current hosted database URL and provider credentials. It is ignored by Git
+and excluded from the Docker build context. `.env.example` contains pre-production-safe placeholders. Do not
+run external write paths until the runtime values, provider access, and Stride booking gate are verified.
 
 ## Current service topology
 
 ```text
-Consented synthetic lead
-        |
-Hosted Supabase development Postgres
-        |
-Cadence worker ---- real Vapi REST /call ----> working test phone
-        |                                      |
-        |                          custom tools/end report over HTTPS
-        |                                      |
-        +---------------- FastAPI API <---- ngrok public URL
-                                 |
-                    internal Compose network
-                                 |
-                  deterministic mock-provider
-                     | Stride | Keap |
+Hosted Supabase Postgres <---- API and cadence worker
+                                  |
+          +-----------------------+-----------------------+
+          |                       |                       |
+    Vapi calls/tools        Twilio messages          Keap handoff
+          |
+    Direct HTTPS tool routes -----> live Stride availability/booking
 ```
 
 Local services:
 
 - API: `http://localhost:8000`; liveness `/health`, readiness `/ready`, docs `/docs`.
-- Mock provider: `http://localhost:9000`; health `/health`, docs `/docs`.
 - Worker: one long-running `rpt-worker` process, polling every 30 seconds by default.
-- Public API: `https://cornmeal-sixtyfold-enclose.ngrok-free.dev` while ngrok is running.
+- Mock provider: `http://localhost:9000` only when Compose profile `mock` is explicitly selected.
+- Public API: the HTTPS value configured in `PUBLIC_BASE_URL`.
 
 Do not expose mock-provider port 9000 through ngrok. Only API port 8000 is public.
 
@@ -125,19 +142,29 @@ Do not expose mock-provider port 9000 through ngrok. Only API port 8000 is publi
 src/rpt_agent/
   api.py                 FastAPI assembly and trace middleware
   routes/
+    availability.py      direct live availability endpoint
+    appointments.py      direct real appointment endpoint
+    leads.py             direct lead-status endpoint
+    tool_request.py      shared Vapi authentication/parsing/audit boundary
     health.py            health/readiness
-    vapi.py              custom tools and durable Vapi webhook
+    vapi.py              compatibility tools and durable end report
     twilio.py            inbound SMS and delivery status callbacks
   services/
-    booking.py           availability/token/patient/case/appointment workflow
+    booking.py           availability/patient/case/appointment workflow
     lead_status.py       validated lead and event transitions
-    delivery.py          confirmation SMS, outbox, webhook retry processing
+    delivery.py          SMS, outbox, webhook retry processing
+    provider_http.py     shared bounded provider HTTP behavior
+    stride_service.py    Stride HTTP contract
+    vapi_service.py      Vapi outbound-call contract
+    twilio_service.py    Twilio messaging contract
+    keap_service.py      signed team-owned handoff contract
   config.py              environment settings and provider-mode validation
   db.py                  psycopg pool and transaction helper
-  providers.py           Vapi/Twilio/Stride/Keap adapters
+  providers.py           compatibility facade over the named provider services
   worker.py              cadence materialization, claims, dispatch, settlement, sweepers
   observability.py       structured logging, trace IDs, redaction, rotation
   security.py            Vapi/Twilio auth and signing helpers
+  retry.py               bounded exponential backoff with jitter
   vapi_contract.py       current and legacy Vapi tool parsers/results
   mock_server.py         deterministic provider mocks
   cli.py                 migrate/verify/seed/demo/test-lead/tick commands
@@ -152,13 +179,14 @@ docs/FUTURE_DEPLOYMENT.md
 tests/
 ```
 
-The old flat `services.py` was removed and split into the real `services/` package. The old monolithic API
-was split into route modules. Shared transitions no longer import `worker.py` into the API process.
+The old flat `services.py` was removed and split into the `services/` package. HTTP routes and provider
+contracts are now named by responsibility so the pre-production path is navigable without adding a framework
+or speculative layers. `providers.py` remains only as a small compatibility facade for existing callers.
 
 ## Database and migrations
 
-The hosted Supabase development database was inspected and updated through the connected Supabase MCP.
-Application runtime uses a normal pooled Postgres connection.
+The configured hosted Supabase project was inspected and updated during the transition. Application runtime
+uses a normal pooled Postgres connection with required TLS in pre-production/production.
 
 Migrations currently present:
 
@@ -176,8 +204,14 @@ Migrations currently present:
 11. `011_test_usage_ledger.sql` — durable, deduplicated ledger for real Vapi/Twilio synthetic-test usage,
     provider settlement status, and provider-reported cost.
 12. `012_test_usage_lead_index.sql` — covering partial index for the ledger's nullable lead foreign key.
+13. `013_retry_and_reconciliation.sql` — repairs the fresh-schema call-log event reference and adds durable
+    notification retry scheduling plus explicit provider-webhook dead-letter state and indexes.
+14. `014_preproduction_booking_api.sql` — adds PHI-free `integration_events` auditing and records whether a
+    settled call outcome came from a conversational tool or the end-report fallback.
+15. `015_stride_booking_gate.sql` — adds the fail-closed per-practice `stride_booking_enabled` switch.
 
-Migrations 007–012 were applied to the connected Supabase development project. Migration 009 fixed a real
+Migrations 001–015 are applied to the currently configured hosted Supabase project and `rpt verify` confirmed
+the registry on 2026-08-26. Migration 009 fixed a real
 end-to-end defect where a null `stride_location_timezone` caused `ZoneInfo(None)` during confirmation SMS
 delivery. Runtime delivery also falls back to the lead timezone and then `America/Los_Angeles`.
 
@@ -196,6 +230,15 @@ Important database guarantees and semantics:
 - `do_not_contact` blocks calls and SMS and adds internal suppression.
 - Twilio acceptance means queued/sent; delivery requires a callback.
 - Ambiguous Stride appointment timeouts become `unknown/needs_review` and are never automatically retried.
+- Transient safe failures use bounded exponential backoff with jitter and a maximum attempt count.
+- Ambiguous create operations are reconciled/manual-review work, never blind retries.
+- Twilio delivery states move forward only; early callbacks remain durable until their send row exists.
+- Keap handoff retries reuse the stable event ID and move to `dead` after permanent failure or exhaustion.
+- Provider webhook receipts record `dead_lettered_at` when internal processing exhausts its bounded attempts.
+- Provider request auditing stores only safe integration metadata; raw bodies, secrets, DOB, contact data,
+  and transcripts are excluded.
+- Real Stride appointment writes fail closed until each practice has verified settings and explicitly enables
+  `stride_booking_enabled`; repeat requests for an already-confirmed appointment remain idempotent.
 
 ## Cadence and synthetic test mode
 
@@ -259,6 +302,8 @@ Current contract decisions:
 - Return one ordered result per received call with the exact `toolCallId`.
 - Tool `result`/`error` values are short, single-line strings because Vapi puts them into model context.
 - Tools are strict, synchronous, concise, and use request-start messages where appropriate.
+- Direct routes accept the current Vapi envelope and the documented flat request shape; authenticated
+  business/provider failures remain conversational HTTP 200 results so a live call can recover gracefully.
 - Trusted `lead_id` and `outreach_event_id` are injected as transport/static variables and override any
   model-generated versions.
 - Vapi inbound auth accepts the configured `X-Vapi-Secret`, bearer form, or configured HMAC; authentication
@@ -279,7 +324,9 @@ Configured Vapi resources (identifiers are non-secret):
 
 The sync script preserves built-in transfer/end-call tools and configures:
 
-- Tools URL: `<PUBLIC_BASE_URL>/api/v1/vapi/tools`.
+- Availability URL: `<PUBLIC_BASE_URL>/api/v1/tools/check-availability`.
+- Appointment URL: `<PUBLIC_BASE_URL>/api/v1/tools/create-appointment`.
+- Lead-status URL: `<PUBLIC_BASE_URL>/api/v1/webhooks/vapi/lead-status`.
 - Webhook URL: `<PUBLIC_BASE_URL>/api/v1/vapi/webhook`.
 - Webhook server messages: `end-of-call-report`.
 
@@ -299,16 +346,17 @@ kept in `config/vapi_assistant_prompt.md` and synchronized through the API.
 The assistant is Sarah, a concise Rausch PT patient coordinator. It:
 
 - Confirms identity and whether it is a good time.
-- Uses `check_availability` only after receiving a preferred date.
-- Offers no more than three returned slots and never invents availability.
-- Collects/confirms first name, last name, and DOB immediately before booking.
-- Uses the exact signed slot token with `create_appointment`.
-- Claims success only for confirmed/already-booked responses with an appointment ID.
+- Uses `check_availability` after receiving a preferred date or when the patient asks for the next openings.
+- Offers no more than two live Stride slots and never creates a local availability grid.
+- Uses the exact confirmed date/time with `create_appointment`; patient identity/DOB are trusted static data,
+  not model-supplied values.
+- Claims success only for confirmed/already-booked or confirmed-but-local-sync-pending responses.
 - Calls `update_lead_status` exactly once before ending an answered call.
-- Distinguishes booked, not interested, callback, transferred, manual, calls-only opt-out, and global DNC.
+- Distinguishes booked, declined, callback scheduled, booking link, transferred to a human, no answer, wrong
+  person, calls-only opt-out, and global DNC.
 - Does not provide medical, insurance, billing, or pricing advice.
 
-## Stride mock and booking rules
+## Stride API and booking rules
 
 Only four supplied operations are implemented:
 
@@ -319,13 +367,24 @@ Only four supplied operations are implemented:
 
 Booking behavior:
 
-- First name, last name, and DOB must be persisted before direct booking.
-- A signed slot token expires after five minutes; no separate quote subsystem exists.
+- First name, last name, and DOB must already be persisted before direct booking.
+- The direct contract uses the requested date/time. The compatibility route can still consume a short-lived
+  signed slot token; there is no separate quote subsystem.
 - Availability is rechecked immediately before appointment creation.
+- Availability reads the real provider response, accepts the live `clinicianId` field, and offers at most two
+  choices to the caller.
 - Appointment request uses `is_pending=true` so Stride performs overlap checks.
 - Existing Stride patient/case IDs on the lead are reused.
+- Booking idempotency uses `lead_id + start_utc`; an existing confirmed appointment returns before any new
+  Stride request.
 - Duplicate patient without an existing mapping routes to staff review.
 - A potentially accepted timeout becomes `unknown/needs_review` and is never retried automatically.
+- If Stride confirms the appointment but a later local finalization step fails, the caller is told the
+  appointment is booked and the record is flagged for local reconciliation rather than falsely reporting a
+  provider failure.
+- Appointment writes are gated by `practice_settings.stride_booking_enabled`. The supplied Stride material
+  did not identify the numeric Initial Evaluation appointment-type ID, so the gate remains false until that
+  ID and the other practice settings are confirmed. Do not guess this value.
 - Cancellation/rescheduling remain local/reconciliation concepts until corresponding APIs are provided.
 
 Mock scenarios include success, duplicate patient, missing/malformed records or dates, unavailable slot,
@@ -361,7 +420,9 @@ Mode guidance:
 Real outbound messages include `<PUBLIC_BASE_URL>/api/v1/twilio/message-status` as `StatusCallback`.
 Signature validation reconstructs that public ngrok URL rather than trusting the internal Docker URL.
 Authenticated callbacks update both cadence `sms_messages` and appointment-confirmation `notification_log`
-records; provider acceptance remains distinct from delivery.
+records; provider acceptance remains distinct from delivery. Out-of-order callbacks cannot regress a
+delivered state. A callback that arrives before the worker commits its local send record is stored in
+`provider_events` and retried internally with the same bounded retry policy.
 
 The configured Twilio phone's inbound SMS webhook currently points to Vapi's `api.vapi.ai/twilio/sms`, not
 this project's `/api/v1/twilio/inbound-sms`. It was deliberately not overwritten because that could disrupt
@@ -377,9 +438,10 @@ mark a message delivered.
 
 - Booking inserts `appointment.booked.v1` in a transactional outbox.
 - Payload contains contact and appointment fields described in the supplied Keap notes.
-- A configurable signed webhook is owned by the Keap team.
+- A configurable, HMAC-signed, event-ID-deduplicated webhook is owned by the Keap team and is the real
+  pre-production integration boundary when `KEAP_MODE=real`.
 - Mock receiver records events and simulates success, rejection, timeout, and duplicate delivery.
-- No Keap OAuth, CRM contacts, tags, email, or internal workflow is implemented.
+- Direct Keap OAuth/CRM mutation is not implemented because no application/OAuth contract was supplied.
 - SFTP testing reads synthetic fixture CSV files; no SFTP daemon is run locally.
 
 ## Lead outcome state machine
@@ -387,23 +449,26 @@ mark a message delivered.
 Valid call outcomes are:
 
 - `booked`
-- `not_interested`
+- `declined`
+- `callback_scheduled`
+- `booking_link`
+- `transferred_human`
 - `no_answer`
-- `voicemail`
-- `callback`
-- `transferred`
-- `manual`
+- `wrong_person`
 - `call_opt_out`
 - `do_not_contact`
 
+Legacy outcome spellings are mapped to these canonical statuses at the compatibility boundary.
+
 Rules:
 
-- A terminal event replay with the same outcome is idempotent.
-- A conflicting terminal outcome is rejected.
+- Duplicate status delivery is claimed atomically with `call_id:lead_id:status`: an exact replay is ignored,
+  while a different status is processed under its own key. A confirmed booking remains terminal.
 - Callback requires a timezone-aware future time no more than 30 days away; a planned callback call is added.
 - Booked requires a confirmed appointment and completes/skips the remaining cadence.
-- Not interested produces declined/terminated without any channel opt-out.
-- Manual pauses cadence and flags staff review.
+- Declined terminates outreach without adding a channel opt-out.
+- Booking-link status queues the existing durable SMS path only when consent/suppression checks allow it.
+- Human transfer pauses cadence; wrong-person/unknown states flag staff attention.
 - Day 9 inbound SMS `CALL` records a callback request.
 
 ## Observability and debugging
@@ -433,7 +498,7 @@ redaction bug that mistakenly hid UUID/date-like safe values was fixed.
 Each worker tick now receives a fresh trace ID. Debug mode can include low-level HTTP client events; business
 workflow events remain explicit.
 
-## Important end-to-end verification already completed
+## Historical mock end-to-end verification
 
 A paused disposable synthetic preflight lead was created in the Supabase development project:
 
@@ -466,11 +531,13 @@ applied, and both idempotent mock deliveries completed.
 
 ## Test and quality status
 
-Latest verified local result on 2026-08-25 after the second Ponytail cleanup:
+Latest verified local result on 2026-08-26 after the pre-production booking API work:
 
 ```text
-34 passed, 3 skipped
+51 passed, 3 skipped
 ruff: all checks passed
+docker compose config: valid
+configured Supabase migration registry: 001-015 present
 ```
 
 The three skipped tests are optional integration/real-provider tests requiring explicit environment values,
@@ -489,6 +556,15 @@ Covered tests include:
 - Test-mode compression only for `is_test` leads.
 - Worker formatting and original production business-hour behavior.
 - Database integration cases when `TEST_DATABASE_URL` is supplied.
+- Retry classification, `Retry-After`, exponential delay/caps, ambiguous POST protection, dispatch isolation,
+  Twilio forward-only status SQL, and migration 013 contract coverage.
+- Direct availability, appointment, and lead-status route contracts, including flat and Vapi-wrapped requests,
+  trusted transport IDs, fail-closed authentication, and conversational errors.
+- Real Stride camel-case availability parsing and pre-production migration/gate contracts.
+
+A read-only live Stride availability contract check passed using the supplied demo access material. It made no
+patient, case, appointment, call, SMS, or Keap write. The live response established that availability returns
+`clinicianId`; the adapter still accepts the supplied document's `clinician_id` spelling for compatibility.
 
 ## Local and ngrok commands
 
@@ -497,7 +573,6 @@ Start/rebuild:
 ```powershell
 cd F:\rpt
 docker compose run --rm api rpt migrate
-docker compose run --rm api rpt seed
 docker compose up --build -d
 ```
 
@@ -506,7 +581,6 @@ Verify:
 ```powershell
 Invoke-RestMethod http://localhost:8000/health
 Invoke-RestMethod http://localhost:8000/ready
-Invoke-RestMethod http://localhost:9000/health
 docker compose ps
 ```
 
@@ -527,7 +601,7 @@ Invoke-RestMethod `
 Watch logs or force one tick:
 
 ```powershell
-docker compose logs -f worker api mock-provider
+docker compose logs -f worker api
 Get-Content F:\rpt\logs\rpt-agent-worker.jsonl -Wait
 docker compose exec worker rpt tick
 ```
@@ -544,15 +618,19 @@ git diff --check
 
 - Docker uses `PYTHONPATH=/app/src`. This fixed a serious reload problem where bind-mounted source changed
   but Python continued importing the installed wheel from the image.
-- API/mock services use reload for local development; worker must be restarted after worker-source changes.
+- The default Compose API command does not use reload and does not start the mock provider. Select the
+  `mock` profile explicitly for deterministic local/provider tests.
 - `.dockerignore` excludes `.env`, Git data, logs, caches, builds, and the large reference clone so secrets and
   irrelevant source are not sent into the Docker build context.
 - `.gitignore` excludes `.env`, logs, environments, caches, build products, and the reference clone.
 
 ## Current Git state at this handoff
 
-Before creation of this context file, the worktree was clean. Recent commits were:
+The last pushed commit is `09773f5 feat: track test usage and delivery status`. The retry/reconciliation and
+pre-production booking API changes described in the 2026-08-26 changelog entries remain working-tree changes
+until explicitly committed. Earlier commits include:
 
+- `09773f5 feat: track test usage and delivery status`
 - `636f3a5 vapi intigration`
 - `32fc84b first commit having all the relevent practices implimented from the aws_deployed_project`
 
@@ -561,14 +639,19 @@ user work when continuing development.
 
 ## Known limitations and next work
 
-- Real Stride APIs are still being implemented by another developer. Do not replace mocks until their final
-  endpoint/auth/response contracts are supplied and verified.
-- Real Keap remains optional/not configured. Real Twilio outbound messaging is configured; inbound SMS still
-  terminates at Vapi until the webhook ownership decision described above is made.
+- Real Stride appointment creation is implemented but intentionally gated off until the numeric Initial
+  Evaluation appointment-type ID is confirmed and `stride_booking_enabled=true` is set for the practice.
+- The real Keap boundary is the team-owned signed handoff. Direct OAuth/CRM mutation remains out of scope.
+- Real Twilio outbound messaging is supported; inbound SMS still terminates at Vapi until the webhook
+  ownership decision described above is made.
 - Twilio Test credentials cannot validate actual delivery callbacks.
 - The ngrok public hostname works only while the tunnel is running; rerun Vapi sync if the hostname changes.
 - Vapi/other chat-pasted credentials must be rotated before production.
 - Real-provider contract tests remain disabled unless explicit sandbox variables are present.
+- Vapi/Twilio/Stride create operations with an ambiguous result still require provider reconciliation because
+  the supplied contracts do not expose a safe client idempotency key or lookup for an ID-less timeout.
+- The Vapi sync script has not been run against the live assistant for this change. Run it only after the
+  pre-production public URL/auth configuration and Stride booking settings have been confirmed.
 - AWS deployment remains deferred. `docs/FUTURE_DEPLOYMENT.md` is preparation only.
 - Before production PHI, complete vendor agreements, production security review, secret management, database
   backup/restore validation, alerting, and log-shipping review.
@@ -591,6 +674,64 @@ user work when continuing development.
 
 Append entries newest first. Include date, decision/change, migrations, configuration impact, validation, and
 known follow-up. Do not include secrets or patient/tester identifiers.
+
+### 2026-08-26 — Real booking APIs and pre-production transition
+
+- Moved the runtime target from the hybrid development/mock milestone to pre-production. `.env.example` and
+  default Compose behavior now select real Vapi, Twilio, Stride, Supabase, and the signed Keap-team handoff;
+  mock-provider startup requires the explicit `mock` profile and the API no longer runs with reload by default.
+- Added the direct authenticated endpoints `POST /api/v1/tools/check-availability`,
+  `POST /api/v1/tools/create-appointment`, and `POST /api/v1/webhooks/vapi/lead-status`. They accept the
+  current Vapi envelope and documented flat body, preserve trusted static IDs, return concise conversational
+  results, and fail closed on authentication.
+- Split provider HTTP contracts into plainly named Vapi, Twilio, Stride, and Keap service modules with one
+  small shared retry/audit helper. Provider rejection bodies are normalized before persistence so raw
+  provider/PHI content does not enter error ledgers. Retained `providers.py` only as a compatibility facade.
+- Implemented live Stride availability and appointment creation: exact date/time selection, immediate live
+  recheck, `lead_id + start_utc` idempotency, cached patient/case mappings, `is_pending=true`, and local
+  reconciliation if final database work fails after provider confirmation. No unsupported Stride endpoint was
+  invented.
+- Added atomic `call_id:lead_id:status` status deduplication, canonical status handling, durable booking-link
+  SMS, booked-terminal behavior, and source attribution between tool settlement and end-report fallback.
+- Added migration 014 for PHI-free integration auditing and call outcome source, plus migration 015 for the
+  fail-closed Stride booking gate. Migrations 013-015 were applied to the configured hosted Supabase project
+  and `rpt verify` confirmed registry entries 001-015.
+- Updated the configured practice with the non-secret location/clinician/timezone values supplied in the
+  Stride export. The numeric Initial Evaluation appointment-type ID was not supplied, so
+  `stride_booking_enabled` remains false; availability is live but new appointment writes correctly refuse
+  until the ID is verified and the gate is explicitly enabled.
+- Updated Vapi tool definitions and the idempotent sync script to use the three direct endpoints and reuse
+  tools by function name. The live assistant was not mutated because public/auth/provider configuration must
+  be verified before synchronization.
+- Added deployment checks for required Vapi resource IDs, enforced database TLS modes, HTTPS/default-secret
+  rejection for the Keap handoff, non-placeholder Twilio sender configuration, and disabled accelerated test
+  mode in staging/pre-production/production.
+- Verified a read-only live Stride availability request without creating any provider/customer state.
+  Validation: `51 passed, 3 skipped`; Ruff, `git diff --check`, Compose configuration, and hosted migration
+  verification passed. Two known dependency deprecation warnings remain.
+
+### 2026-08-26 — Bounded retry and reconciliation policy
+
+- Classified provider failures as safely retryable, permanent, or ambiguous. Idempotent reads and HTTP 429
+  receive short bounded retries; durable outreach/notification retries use exponential backoff with jitter,
+  honor `Retry-After`, and stop after a configurable maximum.
+- Preserved at-most-once safety for ambiguous Vapi call, Twilio SMS, and Stride create results. Those operations
+  become `unknown`/review work instead of risking duplicate patient contact or appointments.
+- Added migration 013 for notification retry scheduling, explicit provider-receipt dead letters, and the
+  missing clean-schema `call_logs.outreach_event_id` contract. It is not yet applied to the hosted
+  development database.
+- Made Twilio delivery transitions forward-only and retained early callbacks for internal replay. Added
+  bounded, concurrency-leased Vapi/Twilio receipt reprocessing.
+- Keap handoffs continue to reuse their event ID, now back off only for retryable failures and move to `dead`
+  on permanent failure or exhaustion.
+- Persisted successful Stride patient/case IDs between steps, made failed same-slot reservations reusable,
+  and added stale-booking reconciliation. Generic answered Vapi end reports no longer overwrite the more
+  specific conversational tool outcome.
+- Configuration adds `HTTP_RETRY_ATTEMPTS`, `HTTP_RETRY_BASE_SECONDS`, `RETRY_MAX_ATTEMPTS`,
+  `RETRY_BASE_SECONDS`, and `RETRY_MAX_SECONDS` with safe bounds.
+- Validation: `41 passed, 3 skipped`; Ruff and `git diff --check` passed. Existing dependency deprecation
+  warnings are unchanged. Follow-up: apply migration 013 before restarting the updated worker and monitor
+  dead/unknown reconciliation states in deployment.
 
 ### 2026-08-25 — Three-lead one-minute cadence validation
 

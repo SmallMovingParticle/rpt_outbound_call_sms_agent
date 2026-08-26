@@ -3,6 +3,7 @@ import json
 from rpt_agent.vapi_contract import (
     outcome_from_ended_reason,
     parse_tool_calls,
+    parse_tool_request,
     tool_error,
     tool_success,
 )
@@ -40,6 +41,12 @@ def test_transport_context_overrides_model_generated_ids():
     call = parse_tool_calls(body)[0]
     assert call.arguments["lead_id"] == "trusted-lead"
     assert call.arguments["outreach_event_id"] == "42"
+
+
+def test_direct_tool_request_accepts_flat_body_without_returning_secret():
+    request = parse_tool_request({"lead_id": "lead-1", "vapi_secret": "secret"})
+    assert request.tool_call_id is None
+    assert request.arguments == {"lead_id": "lead-1"}
 
 
 def test_current_shape_accepts_json_argument_string():

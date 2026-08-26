@@ -33,6 +33,34 @@ async def require_vapi_auth(request: Request) -> None:
         ).hexdigest()
         if hmac.compare_digest(signature.removeprefix("sha256="), expected_signature):
             return
+    if expected:
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON remains unauthenticated
+            body = {}
+        candidates = [body.get("vapi_secret")] if isinstance(body, dict) else []
+        message = body.get("message") if isinstance(body, dict) else None
+        message = message if isinstance(message, dict) else {}
+        for key in ("toolCallList", "toolCalls"):
+            for item in message.get(key) or []:
+                if not isinstance(item, dict):
+                    continue
+                function = item.get("function") if isinstance(item.get("function"), dict) else {}
+                arguments = item.get("arguments") or item.get("parameters") or function.get("arguments")
+                if isinstance(arguments, str):
+                    try:
+                        import json
+
+                        arguments = json.loads(arguments)
+                    except (TypeError, ValueError):
+                        arguments = {}
+                if isinstance(arguments, dict):
+                    candidates.append(arguments.get("vapi_secret"))
+        if any(
+            isinstance(candidate, str) and hmac.compare_digest(candidate, expected)
+            for candidate in candidates
+        ):
+            return
     raise HTTPException(status_code=401, detail="invalid Vapi credentials")
 
 
