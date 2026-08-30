@@ -1,6 +1,6 @@
 # RPT Agent — Complete Project Context and Handoff
 
-Last updated: 2026-08-26 (Asia/Calcutta)
+Last updated: 2026-08-30 (Asia/Calcutta)
 
 This is the durable context file for future Codex, Claude, and human development sessions. Read this file
 before changing the project. Update it whenever a material decision, schema migration, integration contract,
@@ -61,10 +61,11 @@ complexity were deliberately not copied.
 
 ## Product goal
 
-Build an industry-quality pre-production Python outreach agent for Rausch Physical Therapy. It ingests leads,
-materializes the existing 14-day cadence, dispatches Vapi calls and Twilio messages, books an Initial
-Evaluation through Stride, settles lead/event state, sends one confirmation SMS, and publishes a deduplicated
-`appointment.booked.v1` handoff for the Keap team.
+Build an industry-quality pre-production outreach and CRM system for Rausch Physical Therapy. It ingests
+leads, materializes the existing 14-day cadence, dispatches Vapi calls and Twilio messages, books an Initial
+Evaluation through Stride, settles lead/event state, sends one confirmation SMS, publishes a deduplicated
+`appointment.booked.v1` handoff for the Keap team, and gives authorized Rausch staff a focused operational
+dashboard.
 
 The codebase is now in the **pre-production** phase. Runtime adapters and HTTP contracts are real; deterministic
 mocks remain only for automated and explicitly selected local testing. Until production agreements, security
@@ -77,6 +78,8 @@ Current scope:
 
 - FastAPI API, cadence worker, real Vapi/Twilio/Stride adapters, the signed Keap-team handoff, migrations,
   tests, Docker, PowerShell/cross-platform commands, and Vapi tool integration.
+- A separate Next.js/Vinext CRM frontend implementing the approved Salesforce V4 concept, with lead pipeline,
+  lead-scoped transcripts, cadence/template controls, provider usage/health, review work, and scheduling.
 - Direct authenticated booking endpoints for live availability, real appointment creation, and lead status.
 - Hosted Supabase Postgres accessed at runtime through `SUPABASE_DB_URL`; no runtime MCP dependency.
 - Deterministic provider mocks retained behind the explicit Compose `mock` profile for tests only.
@@ -119,6 +122,11 @@ run external write paths until the runtime values, provider access, and Stride b
 
 ```text
 Hosted Supabase Postgres <---- API and cadence worker
+             ^                    |
+             |                    |
+   CRM frontend BFF ------ authenticated dashboard API
+             |
+       authorized staff
                                   |
           +-----------------------+-----------------------+
           |                       |                       |
@@ -130,6 +138,8 @@ Hosted Supabase Postgres <---- API and cadence worker
 Local services:
 
 - API: `http://localhost:8000`; liveness `/health`, readiness `/ready`, docs `/docs`.
+- CRM frontend: `http://localhost:3000`; browser traffic reaches the backend only through the same-origin
+  server proxy under `/api/dashboard/*`.
 - Worker: one long-running `rpt-worker` process, polling every 30 seconds by default.
 - Mock provider: `http://localhost:9000` only when Compose profile `mock` is explicitly selected.
 - Public API: the HTTPS value configured in `PUBLIC_BASE_URL`.
@@ -149,6 +159,7 @@ src/rpt_agent/
     health.py            health/readiness
     vapi.py              compatibility tools and durable end report
     twilio.py            inbound SMS and delivery status callbacks
+    dashboard.py         authenticated CRM queries and staff mutations
   services/
     booking.py           availability/patient/case/appointment workflow
     lead_status.py       validated lead and event transitions
@@ -177,6 +188,8 @@ scripts/sync_vapi.py      idempotent Vapi dashboard synchronization
 docs/LOCAL_VAPI_NGROK.md
 docs/FUTURE_DEPLOYMENT.md
 tests/
+frontend/                separate Next.js/Vinext CRM application and environment
+dashboard/               approved Salesforce V4 design-reference images
 ```
 
 The old flat `services.py` was removed and split into the `services/` package. HTTP routes and provider
@@ -209,9 +222,20 @@ Migrations currently present:
 14. `014_preproduction_booking_api.sql` — adds PHI-free `integration_events` auditing and records whether a
     settled call outcome came from a conversational tool or the end-report fallback.
 15. `015_stride_booking_gate.sql` — adds the fail-closed per-practice `stride_booking_enabled` switch.
+16. `016_dashboard_security_and_transcripts.sql` — adds text-only call transcript/summary fields,
+    lead-specific SMS template overrides, idempotent dashboard SMS requests, dashboard audit records, RLS,
+    indexes, and update triggers.
+17. `017_dashboard_lead_intake.sql` — adds dashboard lead type, referral, location, and owner fields with
+    bounded validation for persistent staff-created lead intake.
+18. `018_dashboard_staff_attestation.sql` — permits the dashboard's authenticated staff-attestation source
+    while retaining the bounded consent-source constraint.
 
-Migrations 001–015 are applied to the currently configured hosted Supabase project and `rpt verify` confirmed
-the registry on 2026-08-26. Migration 009 fixed a real
+The local migrations above are applied to the currently configured hosted Supabase project and `rpt verify`
+confirmed them on 2026-08-27. The remote registry also contains
+`016_stride_sandbox_appointment_type.sql`, but that source file is not present in this checkout. Recover its
+authoritative SQL before relying on fresh-environment parity; do not reconstruct it from assumptions. The
+registry keys full filenames, so it coexists with the local dashboard migration despite the shared numeric
+prefix. Migration 009 fixed a real
 end-to-end defect where a null `stride_location_timezone` caused `ZoneInfo(None)` during confirmation SMS
 delivery. Runtime delivery also falls back to the lead timezone and then `America/Los_Angeles`.
 
@@ -237,6 +261,11 @@ Important database guarantees and semantics:
 - Provider webhook receipts record `dead_lettered_at` when internal processing exhausts its bounded attempts.
 - Provider request auditing stores only safe integration metadata; raw bodies, secrets, DOB, contact data,
   and transcripts are excluded.
+- Dashboard reads and writes require a constant-time checked server credential plus trusted user identity;
+  production frontend access additionally requires Sites authentication and an explicit staff email allowlist.
+- Dashboard mutations are audited without storing message bodies or other patient content in the audit log.
+- Manual dashboard SMS is explicit, idempotent, suppression-aware, and moves ambiguous provider results to
+  reconciliation/review rather than retrying blindly.
 - Real Stride appointment writes fail closed until each practice has verified settings and explicitly enables
   `stride_booking_enabled`; repeat requests for an already-confirmed appointment remain idempotent.
 
@@ -531,13 +560,17 @@ applied, and both idempotent mock deliveries completed.
 
 ## Test and quality status
 
-Latest verified local result on 2026-08-26 after the pre-production booking API work:
+Latest verified local result on 2026-08-30 after live dashboard synchronization:
 
 ```text
-51 passed, 3 skipped
+56 passed, 3 skipped
 ruff: all checks passed
 docker compose config: valid
-configured Supabase migration registry: 001-015 present
+frontend lint/build: passed
+npm audit: 0 vulnerabilities
+15 frontend route render checks: HTTP 200
+dashboard proxy snapshot: authenticated HTTP 200 and repeat-read stable
+dashboard lead intake: authenticated contract test and remote rollback integration passed
 ```
 
 The three skipped tests are optional integration/real-provider tests requiring explicit environment values,
@@ -561,6 +594,10 @@ Covered tests include:
 - Direct availability, appointment, and lead-status route contracts, including flat and Vapi-wrapped requests,
   trusted transport IDs, fail-closed authentication, and conversational errors.
 - Real Stride camel-case availability parsing and pre-production migration/gate contracts.
+- Dashboard authentication failure/success, snapshot contracts, dashboard migration coverage, and Vapi
+  text-transcript extraction without an audio dependency.
+- Authenticated, idempotent dashboard lead creation, consent-source validation, audit insertion, and atomic
+  production-cadence materialization.
 
 A read-only live Stride availability contract check passed using the supplied demo access material. It made no
 patient, case, appointment, call, SMS, or Keap write. The live response established that availability returns
@@ -623,6 +660,8 @@ git diff --check
 - `.dockerignore` excludes `.env`, Git data, logs, caches, builds, and the large reference clone so secrets and
   irrelevant source are not sent into the Docker build context.
 - `.gitignore` excludes `.env`, logs, environments, caches, build products, and the reference clone.
+- `frontend/` owns a separate package lock, ignored `.env`, build output, and Sites hosting metadata. Its safe
+  `.env.example` remains versioned.
 
 ## Current Git state at this handoff
 
@@ -653,6 +692,17 @@ user work when continuing development.
 - The Vapi sync script has not been run against the live assistant for this change. Run it only after the
   pre-production public URL/auth configuration and Stride booking settings have been confirmed.
 - AWS deployment remains deferred. `docs/FUTURE_DEPLOYMENT.md` is preparation only.
+- Production CRM hosting is intentionally not published yet. It requires the real Rausch staff email
+  allowlist, a stable public HTTPS backend origin, matching server-side dashboard tokens, and owner-only Sites
+  access. The application fails closed without these values.
+- In-app browser visual QA was unavailable in the current tool session. Automated builds, route rendering,
+  responsive component rules, and API checks passed, but complete desktop/mobile visual acceptance should be
+  performed before production publication.
+- Live provider balance values remain unavailable unless the corresponding provider exposes and the project
+  approves an authenticated account-usage contract. The local preview labels its values as synthetic; the
+  production dashboard must show unavailable rather than inventing a balance.
+- The configured remote migration registry includes `016_stride_sandbox_appointment_type.sql`, whose source
+  file is absent locally. Recover that exact migration before provisioning a clean database.
 - Before production PHI, complete vendor agreements, production security review, secret management, database
   backup/restore validation, alerting, and log-shipping review.
 
@@ -674,6 +724,167 @@ user work when continuing development.
 
 Append entries newest first. Include date, decision/change, migrations, configuration impact, validation, and
 known follow-up. Do not include secrets or patient/tester identifiers.
+
+### 2026-08-30 — Database-only lead rendering and live cadence synchronization
+
+- Removed all frontend showcase lead, appointment, transcript, and activity fixtures. The dashboard now starts
+  empty and renders only authenticated API/database records; stale demo record URLs return to the live lead
+  pipeline instead of substituting another lead.
+- Added five-second snapshot and selected-lead refreshes. The detail API now exposes the stored phone under the
+  same contract as snapshot/create responses, calculates real cadence progress/total, and identifies planned
+  versus in-flight/attempted provider work. Lead headers, cards, overview, cadence, conversation, appointment,
+  and history surfaces no longer use hardcoded patient names, phone numbers, locations, steps, or statuses.
+- Read-only live validation found eight of eight outreach events dispatched for the latest dashboard lead,
+  with no planned events remaining and call attempts correctly shown as awaiting provider results. The API
+  phone matched the database value, no showcase UUID appeared in the snapshot, and no row was created,
+  changed, or deleted by validation. The worker remained active.
+- Validation: `56 passed, 3 skipped`; Ruff, Compose validation, frontend lint/build, live API/proxy reads,
+  source fixture scan, and `git diff --check` passed.
+
+### 2026-08-30 — Lead creation constraint fix and staff-only page access
+
+- Fixed real dashboard lead creation after the simplified consent form exposed a database check-constraint
+  mismatch. Migration `018_dashboard_staff_attestation.sql` adds the automatic authenticated-staff source and
+  is applied to the configured Supabase project.
+- Centralized the production email allowlist and now enforce it on every CRM page as well as the same-origin
+  API proxy. Local preview remains development-only; production users outside the organization allowlist
+  cannot open CRM routes or read/write dashboard data.
+- Remote rollback validation passed through the real create route, produced all eight accelerated cadence
+  events, verified the staff-attestation source, and left no validation lead persisted. The worker was paused
+  throughout the migration and validation, so no provider contact occurred.
+- Validation: `55 passed, 3 skipped`; Ruff, Compose validation, frontend lint/build, migration registry,
+  authenticated live reads, and `git diff --check` passed.
+
+### 2026-08-30 — Simplified Add Lead consent confirmation
+
+- Removed the consent method and consent reference inputs from the Add Lead dialog. The single explicit
+  phone/SMS consent checkbox remains required.
+- The authenticated backend now accepts that required staff attestation and records a dashboard-scoped source
+  and idempotency reference automatically. No consent requirement or suppression rule was removed.
+- Validation: `55 passed, 3 skipped`; Ruff, Compose validation, frontend lint/build, live API/frontend reads,
+  explicit false-consent rejection, and `git diff --check` passed. The worker remained stopped.
+
+### 2026-08-30 — Accelerated frontend-created test leads
+
+- Dashboard-created leads are now marked `is_test` with a unique test run only when `APP_ENV` is development
+  or test and `TEST_MODE=true`. Production-like environments continue to create normal leads.
+- The existing cadence materializer therefore applies `TEST_CADENCE_DAY_MINUTES`; the current test setting
+  maps one cadence day to one minute. The UI confirms when the accelerated test cadence was selected.
+- A remote rollback-only integration check created all eight cadence events and placed Day 13 about 13 minutes
+  after Day 0, then proved that no test row persisted. The worker remained stopped, so no Vapi call, Twilio
+  SMS, appointment, or handoff was dispatched during validation.
+- Validation: `55 passed, 3 skipped`; Ruff, Compose validation, frontend lint/build, backend health/readiness,
+  Leads rendering, authenticated snapshot proxy, invalid-intake rejection, and `git diff --check` passed.
+
+### 2026-08-30 — Persistent dashboard lead intake
+
+- Added migration `017_dashboard_lead_intake.sql` and applied it to the configured Supabase project. It adds
+  bounded lead type, referral, location, and owner fields without classifying existing rows by assumption.
+- Added authenticated, idempotent `POST /api/v1/dashboard/leads`. A successful transaction normalizes the
+  phone, stores the staff-recorded consent method/reference, creates the lead, materializes all active cadence
+  events, and writes a PHI-minimized dashboard audit entry. Any failure rolls the entire operation back.
+- Replaced session-only Add Lead behavior with the real same-origin backend call. The responsive form now
+  requires phone, DOB, lead type, location, owner, a supported consent method/reference, and explicit contact
+  consent confirmation. Backend failures remain visible instead of being reported as preview success.
+- The requested Supabase MCP was not exposed in this tool session, so the additive migration was applied and
+  verified through the repository's configured encrypted Supabase connection. The registry includes migration
+  017, and a remote transaction created all eight cadence events before an intentional rollback confirmed that
+  no validation lead or provider work persisted.
+- Validation: `55 passed, 3 skipped`; Ruff, Compose validation, frontend lint/build, backend health/readiness,
+  Leads rendering, authenticated snapshot proxy, invalid-intake rejection, migration verification, and
+  `git diff --check` passed. No call, SMS, appointment, Keap handoff, worker dispatch, provider credential,
+  hosted configuration, or deployment change was made.
+
+### 2026-08-30 — Local live frontend integration verification
+
+- Verified that the frontend uses only the backend origin and matching server-side dashboard token. Database,
+  Vapi, Twilio, Stride, and Keap credentials remain confined to the backend and are not browser-exposed.
+- Tightened the frontend action fallback so a connected backend rejection is reported to the operator rather
+  than being presented as a preview-only success.
+- Validation: backend health/readiness, frontend snapshot proxy, and a proxied lead-detail read returned HTTP
+  200 using the live database path. Vapi and Twilio reflected real mode; Stride and Keap reflected their
+  current backend-configured mock modes. No provider write, patient contact, backend code, schema, provider
+  contract, hosted configuration, or deployment change was made.
+
+### 2026-08-30 — Lead type selection
+
+- Added a required frontend-only Add Lead selector for Physical Therapy and Wellness. The selection is kept
+  with the session-local preview lead and displayed in its lead information panel.
+- Validation: frontend lint and production build passed. No backend, schema, provider, configuration, or
+  deployment changes were made.
+
+### 2026-08-30 — History filters and hidden navigation scrollbar
+
+- Kept the fixed/sidebar navigation scrollable for short viewports while hiding its browser scrollbar and
+  preventing horizontal overflow.
+- Wired the lead History category controls to filter activity into cadence, messages, calls, and
+  appointments, including an explicit empty result for categories without matching activity. Removed the
+  unsupported audit-detail button from that panel.
+- Validation: frontend lint and production build passed; the representative lead History route returned
+  HTTP 200. No backend, schema, provider, configuration, or deployment changes were made.
+
+### 2026-08-30 — Lead intake, Today filter, and pinned navigation follow-up
+
+- Extended the frontend-only Add Lead dialog with a required native date-of-birth field and an optional
+  referral-source field. These values remain in the session-local preview lead and appear in its lead
+  information panel; no patient values were added to source, documentation, logs, or test output.
+- Changed the Appointments Today control from a scroll reset into a real same-local-day filter with a clear
+  empty state and a Show week return action. The existing global location selection composes with this
+  filter before appointment records reach the page.
+- Fixed tall-page navigation by pinning the sidebar to the viewport, isolating scrolling to the navigation
+  list, and keeping the logo and hamburger stationary. Narrow layouts now use the same hamburger to open a
+  dismissible overlay menu instead of hiding the control.
+- Validation: frontend lint and production build passed; Leads, Appointments, Administration, and SMS
+  Template routes returned HTTP 200; `git diff --check` passed with existing line-ending warnings. No
+  backend, schema, provider, configuration, or deployment changes were made.
+
+### 2026-08-30 — Responsive dashboard refinement and frontend interactions
+
+- Refined only the `frontend/` application; no backend, schema, provider contract, configuration, or
+  deployment behavior changed.
+- Replaced the inert global location and lead-owner controls with native, accessible selectors. The location
+  selector now exposes Dana Point, Laguna Niguel, and Mission Viejo and filters the visible lead,
+  appointment, review, analytics, and home data. Lead owner, stage, and text filters now compose correctly.
+- Wired the board/list switch, global lead search, Start next task, Add Lead modal, Review next/Resolve review,
+  analytics CSV export, template publish/discard, cadence pause/resume, provider refresh, and other visible
+  navigation actions. Frontend-only lead creation is intentionally session-local because the user prohibited
+  backend changes and no lead-create dashboard endpoint exists.
+- Replaced font-baseline status symbols with shared CSS-drawn status marks so Kanban headers, badges, Home,
+  and Analytics tiles remain centered at every size. Consolidated control sizing and native select arrows.
+- Added responsive tablet/mobile rules for the application rail, top bar, page toolbars, cards, record
+  actions, tables, calendar scrolling, dialogs, and multi-column workspaces. Narrow layouts retain location
+  and owner filters and contain their own horizontal overflow instead of widening the viewport.
+- Validation: frontend lint and production build passed; ten representative local routes, including both
+  lead views and a lead workspace, returned HTTP 200; `git diff --check` passed with existing line-ending
+  warnings. Browser-based screenshot/resize automation remained unavailable in this tool session, so final
+  visual acceptance is still required before production publication.
+
+### 2026-08-27 — Secured CRM frontend and dashboard API
+
+- Built the approved Salesforce V4 dashboard as a separate `frontend/` Next.js/Vinext application with its
+  own package lock, ignored environment, Sites configuration, and production build. The consistent component
+  system includes the overview, color/text/icon-coded lead list and Kanban board, appointments, review queue,
+  analytics, global cadence and SMS template studios, provider health/usage, and lead details.
+- Kept SMS and call transcripts behind a selected lead. Calls expose text transcript/summary only; the system
+  does not store or render audio recordings. Vapi end reports now capture bounded text artifacts.
+- Added a same-origin frontend proxy and authenticated dashboard backend. Production access requires Sites
+  identity, an explicit Rausch staff email allowlist, an HTTPS backend, and a high-entropy server-side token;
+  the credential is never sent to browser code. Local synthetic fallback is non-production only.
+- Added staff controls for global cadence descriptions/activation, global SMS templates, lead-specific SMS
+  overrides, lead cadence pause/resume and event scheduling, review resolution, and explicit idempotent manual
+  SMS. Suppression/DNC rules remain authoritative, and ambiguous provider acceptance becomes review work.
+- Added migration `016_dashboard_security_and_transcripts.sql` for text transcripts, lead overrides,
+  idempotent SMS requests, and PHI-minimized mutation audit records; applied it to the configured hosted
+  database. Verification also identified an externally applied `016_stride_sandbox_appointment_type.sql`
+  registry entry whose source is absent locally and must be recovered before fresh-environment parity.
+- Updated local backend/frontend environment contracts with matching ignored dashboard tokens and a safe
+  versioned template. No credential value, patient data, real phone number, or message content was copied into
+  source, documentation, test output, or this changelog.
+- Validation: `54 passed, 3 skipped`; Ruff, Compose validation, `git diff --check`, frontend lint/build, all
+  15 route render checks, authenticated proxy/repeat-read checks, and API health passed. `npm audit` reports
+  zero vulnerabilities. No real call, SMS, booking, or Keap write was performed.
+- Follow-up: configure the real staff allowlist, public HTTPS API origin, Sites secrets, and private access;
+  complete browser visual acceptance; then publish. The frontend remains available locally at port 3000.
 
 ### 2026-08-26 — Real booking APIs and pre-production transition
 

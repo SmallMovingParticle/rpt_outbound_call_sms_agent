@@ -15,6 +15,7 @@ src/rpt_agent/
     leads.py             POST /api/v1/webhooks/vapi/lead-status
     vapi.py              Compatibility tool endpoint and durable end report
     twilio.py             Signed inbound/status callbacks
+    dashboard.py          Authenticated CRM read/write boundary
   services/
     booking.py            Stride booking workflow and idempotency
     lead_status.py        Lead/call transitions and duplicate guard
@@ -34,6 +35,8 @@ supabase/migrations/      Ordered, idempotent schema migrations
 config/                   Vapi tool schemas and assistant prompt
 scripts/                  Local start and Vapi synchronization utilities
 tests/                    Contract, unit, scenario, and optional DB tests
+frontend/                 Separate Next.js/Vinext CRM application and environment
+dashboard/                Approved dashboard concept images (design reference only)
 ```
 
 This keeps the useful API/service/config separation from the reference repository without its duplicated
@@ -167,6 +170,31 @@ Provider invoices remain the accounting source of truth because prices can settl
 
 Provider modes are independent. Changing `VAPI_MODE`, `TWILIO_MODE`, `STRIDE_MODE`, or `KEAP_MODE`
 switches adapters without modifying cadence or booking logic.
+
+## CRM frontend
+
+The production-oriented CRM is a separate application under `frontend/`. Browser requests go through its
+same-origin `/api/dashboard/*` proxy; the dashboard API token remains server-side and is never placed in a
+`NEXT_PUBLIC_*` variable. For local development, make the root and frontend `DASHBOARD_API_TOKEN` values
+match, then run the backend and frontend separately:
+
+```powershell
+Copy-Item frontend\.env.example frontend\.env
+npm --prefix frontend install
+npm --prefix frontend run dev
+```
+
+Open `http://localhost:3000`. The local synthetic preview is enabled only when
+`DASHBOARD_ALLOW_LOCAL_DEMO=true`; production fails closed unless ChatGPT Sites authentication, a Rausch
+staff email allowlist enforced on every page and API request, an HTTPS backend origin, and the shared
+server-side API token are configured. See
+[frontend/README.md](frontend/README.md) for the route map and deployment requirements.
+
+The Add Lead form persists through the authenticated dashboard API. It requires a phone, date of birth,
+lead type, location, owner, and explicit contact-consent confirmation; successful creation is audited and
+atomically materializes the active outreach cadence. In a development/test environment with `TEST_MODE=true`,
+new dashboard leads are marked synthetic and each cadence day uses `TEST_CADENCE_DAY_MINUTES` (currently one
+minute). Provider credentials remain backend-only.
 
 The Keap integration is the signed, event-ID-deduplicated webhook owned by the Keap team. It is real when
 `KEAP_MODE=real` and `KEAP_HANDOFF_URL` points to that receiver. Direct Keap REST/OAuth contact mutation is

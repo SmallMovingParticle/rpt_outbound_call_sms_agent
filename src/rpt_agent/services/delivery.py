@@ -203,6 +203,17 @@ def process_pending_integrations(
     return counts
 
 
+def _call_text_artifacts(message: dict) -> tuple[str | None, str | None]:
+    artifact = message.get("artifact") if isinstance(message.get("artifact"), dict) else {}
+    analysis = message.get("analysis") if isinstance(message.get("analysis"), dict) else {}
+    transcript = artifact.get("transcript")
+    summary = analysis.get("summary")
+    return (
+        transcript[:100_000] if isinstance(transcript, str) else None,
+        summary[:10_000] if isinstance(summary, str) else None,
+    )
+
+
 def process_vapi_end_report(trace: WorkflowTrace, body: dict) -> str:
     """Settle one durable Vapi end report and persist its call log idempotently."""
     message = body.get("message") if isinstance(body, dict) else {}
@@ -213,6 +224,7 @@ def process_vapi_end_report(trace: WorkflowTrace, body: dict) -> str:
     event_id = context.get("outreach_event_id")
     call_id = str(call.get("id") or body.get("id") or "")
     ended = str(message.get("endedReason") or call.get("endedReason") or "")
+    transcript, summary = _call_text_artifacts(message)
     if not lead_id or not event_id or not call_id:
         raise ValueError("webhook cannot be associated with a lead, event, and call")
     mapped_outcome = outcome_from_ended_reason(ended)
@@ -242,9 +254,12 @@ def process_vapi_end_report(trace: WorkflowTrace, body: dict) -> str:
     with transaction() as conn:
         conn.execute(
             "insert into call_logs(outreach_event_id,lead_id,vapi_call_id,dialed_at,ended_at,"
-            "answer_state,ended_reason,outcome_source) values(%s,%s,%s,coalesce(%s::timestamptz,now()),"
-            "%s::timestamptz,%s,%s,%s) on conflict(vapi_call_id) do update set "
-            "outcome_source=coalesce(call_logs.outcome_source,excluded.outcome_source)",
+            "answer_state,ended_reason,outcome_source,transcript_text,summary_text) "
+            "values(%s,%s,%s,coalesce(%s::timestamptz,now()),%s::timestamptz,%s,%s,%s,%s,%s) "
+            "on conflict(vapi_call_id) do update set "
+            "outcome_source=coalesce(call_logs.outcome_source,excluded.outcome_source),"
+            "transcript_text=coalesce(excluded.transcript_text,call_logs.transcript_text),"
+            "summary_text=coalesce(excluded.summary_text,call_logs.summary_text)",
             (
                 int(event_id),
                 lead_id,
@@ -256,6 +271,8 @@ def process_vapi_end_report(trace: WorkflowTrace, body: dict) -> str:
                 "tool"
                 if outcome and mapped_outcome == "manual"
                 else ("webhook" if outcome else None),
+                transcript,
+                summary,
             ),
         )
         conn.execute(
