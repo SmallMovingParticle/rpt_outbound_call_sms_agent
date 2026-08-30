@@ -725,6 +725,44 @@ user work when continuing development.
 Append entries newest first. Include date, decision/change, migrations, configuration impact, validation, and
 known follow-up. Do not include secrets or patient/tester identifiers.
 
+### 2026-08-31 — Public repository presentation refresh
+
+- Refined the public backend README with a concise feature summary, current architecture diagram, technology
+  badges, safe synthetic CRM concept screenshots, and a link to the separate frontend repository.
+- Updated only public GitHub presentation and discovery metadata. No application code, schema, provider
+  contract, runtime configuration, deployment, patient data, call, SMS, booking, or handoff behavior changed.
+- Validation: `56 passed, 3 skipped`; Ruff, Git diff checks, tracked-file hygiene, credential-pattern scanning,
+  and the profile asset-generation workflow passed. The separate frontend lint and production build also
+  passed after its README preview update.
+
+### 2026-08-31 — Protected Vercel frontend deployment
+
+- Added a native Next.js Vercel build target and checked-in Vercel project configuration while preserving the
+  existing Vinext/OpenAI Sites build. Pinned the Vercel runtime to Node.js 22 and corrected the stricter
+  Next.js response/detail type checks instead of disabling TypeScript validation.
+- Adapted the frontend authentication boundary to accept requests that have passed Vercel Authentication.
+  OpenAI Sites still uses forwarded user identity plus the staff email allowlist; Vercel uses one bounded
+  deployment actor because its deployment gate does not forward individual viewer identity to the app.
+  Vercel Authentication must remain enabled for all deployments, project access must stay staff-only, and
+  app-owned organization SSO is required before individual production audit attribution is acceptable.
+- Pushed the frontend changes to the separate GitHub repository and observed the connected Vercel production
+  deployment complete successfully. An anonymous HTTP check was redirected to Vercel SSO with no indexing,
+  confirming that the deployed URL is protected. The requested Vercel MCP was not exposed to this session and
+  the local Vercel CLI was logged out, so runtime secret presence and post-login API connectivity could not be
+  inspected or changed from this session.
+- Validation: frontend lint, native Next.js production build, Vinext production build, dependency audit, source
+  credential scan, Git diff checks, GitHub synchronization, Vercel deployment status, and anonymous access
+  protection passed. No backend, schema, database, worker, provider, or outreach change was made.
+
+### 2026-08-30 — Test database reseed and pending lead intake
+
+- Restored the standard non-patient practice, cadence-step, and SMS-template seed after the test database was
+  cleared and no active practice remained.
+- Added one user-requested synthetic test lead directly to Supabase as `new` with a pending cadence. No
+  consent attestation, outreach events, call, SMS, appointment, or provider action was created.
+- Verified the stored record is marked as test data, remains pending, and has zero outreach events. Required
+  classification, location, ownership, and consent must be supplied before any cadence is activated.
+
 ### 2026-08-30 — Database-only lead rendering and live cadence synchronization
 
 - Removed all frontend showcase lead, appointment, transcript, and activity fixtures. The dashboard now starts

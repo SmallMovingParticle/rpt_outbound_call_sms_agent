@@ -4,6 +4,47 @@ Pre-production Python service for the Rausch PT 14-day outreach cadence. Vapi, T
 and the Keap-team handoff have real provider adapters; mocks remain available only through an explicit
 Compose profile for automated/local testing. Production cadence spreading is unchanged.
 
+<p>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-Supabase-4169E1?logo=postgresql&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-56%20passed-22C55E">
+</p>
+
+## What it delivers
+
+- Executes a durable 14-day voice and SMS outreach cadence with safe retries and idempotent settlement.
+- Lets a Vapi voice agent check live Stride availability, book an evaluation, and update lead outcomes.
+- Sends Twilio confirmations, publishes a signed Keap handoff, and keeps provider failures reviewable.
+- Powers an authenticated operations CRM for lead intake, cadence monitoring, appointments, and analytics.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Staff[Authorized staff] --> CRM[Next.js CRM]
+    CRM --> API[FastAPI dashboard API]
+    Worker[Cadence worker] --> API
+    API <--> DB[(Supabase Postgres)]
+    API --> Vapi[Vapi voice agent]
+    API --> Twilio[Twilio SMS]
+    API --> Stride[Stride scheduling]
+    API --> Keap[Signed Keap handoff]
+```
+
+## CRM preview
+
+These are synthetic design-reference screens; no patient data is shown.
+
+| Outreach operations | Lead pipeline |
+| --- | --- |
+| ![Outreach operations dashboard](dashboard/salesforce-concept-v4-final/01-outreach-home.jpg) | ![Lead pipeline board](dashboard/salesforce-concept-v4-final/02-leads-board.jpg) |
+
+The companion frontend lives in
+[`SmallMovingParticle/rpt_frontend`](https://github.com/SmallMovingParticle/rpt_frontend). Its hosted deployment
+is access-protected and is not a public demo.
+
 ## Project layout
 
 ```text
