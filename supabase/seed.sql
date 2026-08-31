@@ -1,5 +1,5 @@
 insert into public.practices(name,slug,timezone)
-values('Rausch PT & Wellness','rausch-pt','America/Los_Angeles')
+values('Demo PT & Wellness','rausch-pt','America/Los_Angeles')
 on conflict(slug) do update set name=excluded.name,timezone=excluded.timezone;
 
 insert into public.practice_settings(
@@ -38,11 +38,11 @@ on conflict(practice_id,key) do update set step_order=excluded.step_order,day_of
 
 with p as (select id from public.practices where slug='rausch-pt'), templates as (
   select * from (values
-    ('day0_sms','Hi {name}, Rausch PT & Wellness received a request to help you schedule a physical therapy evaluation. Book here: {link}. Reply STOP to opt out.'),
+    ('day0_sms','Hi {name}, our physical therapy team received a request to help you schedule an evaluation. Book here: {link}. Reply STOP to opt out.'),
     ('day1_sms','Hi {name}, just a friendly reminder to schedule your physical therapy evaluation: {link} or call 949-276-5401. Reply STOP to opt out.'),
     ('day5_sms','Hi {name}, getting started with physical therapy is the first step toward moving with less pain and more confidence. Schedule here: {link}. Reply STOP to opt out.'),
     ('day9_sms','Hi {name}, our physical therapy team is here to help. Reply CALL for help scheduling or book here: {link}. Reply STOP to opt out.'),
-    ('day13_sms','Hi {name}, this is a final reminder from Rausch PT & Wellness. Book here: {link} or call 949-276-5401. Reply STOP to opt out.')
+    ('day13_sms','Hi {name}, this is a final reminder from our physical therapy team. Book here: {link}. Reply STOP to opt out.')
   ) as t(key,body)
 )
 insert into public.message_templates(practice_id,cadence_step_id,key,channel,body)

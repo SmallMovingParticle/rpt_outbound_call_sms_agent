@@ -1,8 +1,8 @@
-# RPT Outreach Agent
+# AI Outreach Agent
 
-Pre-production Python service for the Rausch PT 14-day outreach cadence. Vapi, Twilio, Stride, Supabase,
-and the Keap-team handoff have real provider adapters; mocks remain available only through an explicit
-Compose profile for automated/local testing. Production cadence spreading is unchanged.
+Pre-production Python service for a configurable 14-day healthcare outreach cadence. Voice, messaging,
+scheduling, database, and CRM handoff integrations use real provider adapters; mocks remain available only
+through an explicit Compose profile for automated/local testing. Production cadence spreading is unchanged.
 
 <p>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
@@ -32,14 +32,6 @@ flowchart LR
     API --> Stride[Stride scheduling]
     API --> Keap[Signed Keap handoff]
 ```
-
-## CRM preview
-
-These are synthetic design-reference screens; no patient data is shown.
-
-| Outreach operations | Lead pipeline |
-| --- | --- |
-| ![Outreach operations dashboard](dashboard/salesforce-concept-v4-final/01-outreach-home.jpg) | ![Lead pipeline board](dashboard/salesforce-concept-v4-final/02-leads-board.jpg) |
 
 The companion frontend lives in
 [`SmallMovingParticle/rpt_frontend`](https://github.com/SmallMovingParticle/rpt_frontend). Its hosted deployment
@@ -130,7 +122,7 @@ update public.practice_settings ps
 set stride_appointment_type_id = <confirmed_numeric_id>,
     stride_booking_enabled = true
 from public.practices p
-where p.id = ps.practice_id and p.slug = 'rausch-pt';
+where p.id = ps.practice_id and p.slug = '<practice_slug>';
 ```
 
 For deterministic tests only, start the mock provider explicitly:
@@ -226,8 +218,8 @@ npm --prefix frontend run dev
 ```
 
 Open `http://localhost:3000`. The local synthetic preview is enabled only when
-`DASHBOARD_ALLOW_LOCAL_DEMO=true`; production fails closed unless ChatGPT Sites authentication, a Rausch
-staff email allowlist enforced on every page and API request, an HTTPS backend origin, and the shared
+`DASHBOARD_ALLOW_LOCAL_DEMO=true`; production fails closed unless ChatGPT Sites authentication, an
+organization email allowlist enforced on every page and API request, an HTTPS backend origin, and the shared
 server-side API token are configured. See
 [frontend/README.md](frontend/README.md) for the route map and deployment requirements.
 

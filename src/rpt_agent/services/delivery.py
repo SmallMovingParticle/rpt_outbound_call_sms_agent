@@ -62,7 +62,7 @@ def process_pending_integrations(
                 if not link:
                     raise ValueError("booking link notification has no URL")
                 body = (
-                    f"{greeting}schedule your Rausch PT evaluation here: {link}. "
+                    f"{greeting}schedule your physical therapy evaluation here: {link}. "
                     "Reply STOP to opt out."
                 )
             else:
@@ -71,7 +71,7 @@ def process_pending_integrations(
                 )
                 when = local_start.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
                 body = (
-                    f"{greeting}your Rausch PT appointment is confirmed for {when}. "
+                    f"{greeting}your appointment is confirmed for {when}. "
                     "Call 949-276-5401 with questions. Reply STOP to opt out."
                 )
             sid = providers.send_sms(trace, row["phone_e164"], body)

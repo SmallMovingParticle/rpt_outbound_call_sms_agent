@@ -61,10 +61,10 @@ complexity were deliberately not copied.
 
 ## Product goal
 
-Build an industry-quality pre-production outreach and CRM system for Rausch Physical Therapy. It ingests
+Build an industry-quality pre-production outreach and CRM system for a physical therapy practice. It ingests
 leads, materializes the existing 14-day cadence, dispatches Vapi calls and Twilio messages, books an Initial
 Evaluation through Stride, settles lead/event state, sends one confirmation SMS, publishes a deduplicated
-`appointment.booked.v1` handoff for the Keap team, and gives authorized Rausch staff a focused operational
+`appointment.booked.v1` handoff for the Keap team, and gives authorized practice staff a focused operational
 dashboard.
 
 The codebase is now in the **pre-production** phase. Runtime adapters and HTTP contracts are real; deterministic
@@ -372,7 +372,7 @@ kept in `config/vapi_assistant_prompt.md` and synchronized through the API.
 
 ## Vapi assistant behavior
 
-The assistant is Sarah, a concise Rausch PT patient coordinator. It:
+The assistant is Sarah, a concise physical therapy patient coordinator. It:
 
 - Confirms identity and whether it is a good time.
 - Uses `check_availability` after receiving a preferred date or when the patient asks for the next openings.
@@ -692,7 +692,7 @@ user work when continuing development.
 - The Vapi sync script has not been run against the live assistant for this change. Run it only after the
   pre-production public URL/auth configuration and Stride booking settings have been confirmed.
 - AWS deployment remains deferred. `docs/FUTURE_DEPLOYMENT.md` is preparation only.
-- Production CRM hosting is intentionally not published yet. It requires the real Rausch staff email
+- Production CRM hosting is intentionally not published yet. It requires the real organization staff email
   allowlist, a stable public HTTPS backend origin, matching server-side dashboard tokens, and owner-only Sites
   access. The application fails closed without these values.
 - In-app browser visual QA was unavailable in the current tool session. Automated builds, route rendering,
@@ -725,10 +725,19 @@ user work when continuing development.
 Append entries newest first. Include date, decision/change, migrations, configuration impact, validation, and
 known follow-up. Do not include secrets or patient/tester identifiers.
 
+### 2026-08-31 — Public client-brand anonymization
+
+- Replaced client-identifying language in the public README, assistant prompt, seeded message copy, and
+  frontend presentation with neutral healthcare-outreach wording.
+- Removed branded concept screenshots from the current public branch and replaced example staff addresses
+  with reserved `example.com` values. Runtime database identifiers and provider contracts remain unchanged.
+- The repositories remain public; no Git history was rewritten.
+- Validation: `56 passed, 3 skipped`; Ruff passed; frontend lint and production build passed.
+
 ### 2026-08-31 — Public repository presentation refresh
 
 - Refined the public backend README with a concise feature summary, current architecture diagram, technology
-  badges, safe synthetic CRM concept screenshots, and a link to the separate frontend repository.
+  badges, and a link to the separate frontend repository.
 - Updated only public GitHub presentation and discovery metadata. No application code, schema, provider
   contract, runtime configuration, deployment, patient data, call, SMS, booking, or handoff behavior changed.
 - Validation: `56 passed, 3 skipped`; Ruff, Git diff checks, tracked-file hygiene, credential-pattern scanning,
@@ -906,7 +915,7 @@ known follow-up. Do not include secrets or patient/tester identifiers.
 - Kept SMS and call transcripts behind a selected lead. Calls expose text transcript/summary only; the system
   does not store or render audio recordings. Vapi end reports now capture bounded text artifacts.
 - Added a same-origin frontend proxy and authenticated dashboard backend. Production access requires Sites
-  identity, an explicit Rausch staff email allowlist, an HTTPS backend, and a high-entropy server-side token;
+  identity, an explicit organization staff email allowlist, an HTTPS backend, and a high-entropy server-side token;
   the credential is never sent to browser code. Local synthetic fallback is non-production only.
 - Added staff controls for global cadence descriptions/activation, global SMS templates, lead-specific SMS
   overrides, lead cadence pause/resume and event scheduling, review resolution, and explicit idempotent manual
