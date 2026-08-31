@@ -69,7 +69,6 @@ config/                   Vapi tool schemas and assistant prompt
 scripts/                  Local start and Vapi synchronization utilities
 tests/                    Contract, unit, scenario, and optional DB tests
 frontend/                 Separate Next.js/Vinext CRM application and environment
-dashboard/                Approved dashboard concept images (design reference only)
 ```
 
 This keeps the useful API/service/config separation from the reference repository without its duplicated
